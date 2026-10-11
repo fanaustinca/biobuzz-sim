@@ -13,6 +13,8 @@ A 3D browser simulator for the 2026-27 FIRST Tech Challenge game **BIOBUZZ**, bu
 - **Auto-aim:** an exact ballistic solver, with Rapier's integrator offset cancelled, plus a swept-sphere clearance check. Every *locked* shot lands in the up CELL (verified by tests).
 - **AUTO recorder:** record a 30 s routine and it replays during the AUTO period of a match. If nothing is recorded, your robot skips AUTO.
 - **AI robots:** partner and opponents with Offense, Defense and Mixed strategies (A* navigation, shooting-spot search, endgame FLOWER play, parking, and a no-pinning limit).
+- **Drive tuning:** sliders for forward / sideways max speed, forward / sideways acceleration, turn speed, turn acceleration and slow-mode speed, saved per drivetrain (your robot only).
+- **Custom controls:** rebind every keyboard key and gamepad button, and set the intake, flap, auto-aim and slow-mode inputs to toggle or hold. The intakes can start on or off. The help panel follows your bindings.
 - **Gamepad API:** FTC controllers (Logitech F310, Etpark/PS4) on the standard mapping. Gamepad 2 can drive Red 2.
 - **Match flow:** 0:30 AUTO, 0:08 transition, 2:00 TELEOP. HIVE TIPS unlock human-player NECTAR, FLOWERS unlock at 1:00, and the full Table 10-2 scoring includes ranking points.
 

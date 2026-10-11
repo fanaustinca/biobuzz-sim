@@ -261,6 +261,46 @@ await test('reconfiguring the drivetrain/intake rebuilds the robot', async () =>
   assert(r.d === '4wd' && r.i === 'double', JSON.stringify(r));
 });
 
+// Place the player in open field facing +z with the other robots off
+const isolate = () => ev(() => {
+  Object.assign(BIOBUZZ.settings.ctl, { R2: 'off', B1: 'off', B2: 'off' }); BIOBUZZ.startFree();
+  const R = BIOBUZZ.sim.player; R.body.setTranslation({ x: -1.0, y: 0, z: -1.4 }, true); R.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  R.body.setLinvel({ x: 0, y: 0, z: 0 }, true); BIOBUZZ.advance(0.1);
+});
+const holdKey = async (key, sec, probe) => { await page.keyboard.down(key); const r = await ev(probe, sec); await page.keyboard.up(key); return r; };
+const localVel = (sec) => { BIOBUZZ.advance(sec); const R = BIOBUZZ.sim.player, v = R.vel, h = R.heading; return { fwd: v.x * Math.sin(h) + v.z * Math.cos(h), side: v.x * Math.cos(h) - v.z * Math.sin(h) }; };
+
+await test('drive tuning: forward/sideways max speed and forward accel are applied to the player robot', async () => {
+  const T = await ev(() => JSON.stringify(BIOBUZZ.settings.tune));
+  try {
+    await ev(() => Object.assign(BIOBUZZ.settings.tune.mecanum, { vfwd: 2.0, afwd: 12, vstrafe: 0.6, alat: 12 }));
+    await isolate();
+    const top = await holdKey('KeyW', 1.0, localVel);
+    assert(Math.abs(top.fwd - 2.0) < 0.08, `forward top speed ${top.fwd}`);
+    await ev(() => Object.assign(BIOBUZZ.settings.tune.mecanum, { afwd: 3 }));
+    await isolate();
+    const acc = await holdKey('KeyW', 0.3, localVel);
+    assert(acc.fwd > 0.7 && acc.fwd < 0.95, `speed after 0.3 s at 3 m/s² ${acc.fwd}`);
+    await isolate();
+    const side = await holdKey('KeyD', 1.0, localVel);
+    assert(Math.abs(Math.abs(side.side) - 0.6) < 0.05, `strafe top speed ${side.side}`);
+    console.log(`      top ${top.fwd.toFixed(2)} m/s · after 0.3 s @3 m/s² ${acc.fwd.toFixed(2)} m/s · strafe ${Math.abs(side.side).toFixed(2)} m/s`);
+  } finally { await ev((t) => { BIOBUZZ.settings.tune = JSON.parse(t); }, T); }
+});
+
+await test('controls: rebinding a key and switching a toggle to hold mode', async () => {
+  try {
+    await ev(() => { BIOBUZZ.settings.keys.fwd = 'KeyI'; BIOBUZZ.settings.modes.intakeF = 'hold'; });
+    await isolate();
+    const oldKey = await holdKey('KeyW', 0.5, localVel);
+    const newKey = await holdKey('KeyI', 0.5, localVel);
+    assert(Math.abs(oldKey.fwd) < 0.05 && newKey.fwd > 0.5, `W ${oldKey.fwd} / I ${newKey.fwd}`);
+    const idle = await ev(() => { BIOBUZZ.advance(0.1); return BIOBUZZ.sim.player.intakeF; });
+    const held = await holdKey('KeyF', 0.1, (s) => { BIOBUZZ.advance(s); return BIOBUZZ.sim.player.intakeF; });
+    assert(idle === 0 && held === 1, `hold-mode intake idle ${idle} held ${held}`);
+  } finally { await ev(() => { BIOBUZZ.settings.keys.fwd = 'KeyW'; BIOBUZZ.settings.modes.intakeF = 'toggle'; Object.assign(BIOBUZZ.settings.ctl, { R2: 'ai', B1: 'ai', B2: 'ai' }); }); }
+});
+
 await test('screenshots render without WebGL errors', async () => {
   await ev(() => { BIOBUZZ.startFree(); BIOBUZZ.advance(4); });
   await shot('driver.png', 'driver');
