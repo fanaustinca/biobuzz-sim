@@ -137,7 +137,7 @@
     <button class="btn" id="bAutoExport">Export / Import</button>
   </div>
 
-  <h2>Your robot (Red 1)</h2>
+  <h2>Your robot (6767 · Red 1)</h2>
   <div class="row"><span>Drivetrain</span><div class="seg" data-key="drive"><button data-v="mecanum">Mecanum</button><button data-v="4wd">4-Wheel</button></div></div>
   <div class="row"><span>Intake</span><div class="seg" data-key="intake"><button data-v="single">Single</button><button data-v="double">Double</button></div></div>
   <div class="row"><span>Cover flap</span><div class="seg" data-key="flap"><button data-v="down">Shooter</button><button data-v="up">Flower</button></div></div>
@@ -174,7 +174,7 @@
     <tr><td>W A S D</td><td>Drive / strafe (4WD: A/D turn)</td></tr>
     <tr><td>Q E · ← →</td><td>Rotate</td></tr>
     <tr><td>Space</td><td>Shoot / place in flower</td></tr>
-    <tr><td>F · B</td><td>Toggle front / back intake</td></tr>
+    <tr><td>F · B</td><td>Front / back intake on/off (on by default)</td></tr>
     <tr><td>R (hold)</td><td>Reverse intakes (eject)</td></tr>
     <tr><td>G</td><td>Flip cover flap (shoot ↔ flower)</td></tr>
     <tr><td>T</td><td>Auto-aim on/off</td></tr>
@@ -186,7 +186,7 @@
   <table>
     <tr><td>L stick · R stick X</td><td>Drive/strafe · rotate</td></tr>
     <tr><td>RT · LT</td><td>Shoot · reverse intake</td></tr>
-    <tr><td>A · B</td><td>Front · back intake toggle</td></tr>
+    <tr><td>A · B</td><td>Front · back intake on/off</td></tr>
     <tr><td>Y · X</td><td>Flap · auto-aim toggle</td></tr>
     <tr><td>LB · RB</td><td>Slow · camera</td></tr>
     <tr><td>D-pad</td><td>Manual turret / hood</td></tr>
@@ -237,6 +237,8 @@ const HIVE = {
   inertia: 0.16,
 };
 const FRAME = { halfW: 49.46 * IN / 2, halfD: 38.95 * IN / 2, apexY: 45 * IN };
+// Logo panels on the crossbar sit above the HIVE axles so the rotating HIVES never pass through them
+const LOGO = { halfW: 0.55, y0: 1.118, y1: 1.27, z: 0.045 };
 
 // FLOWER geometry (Section 9.7)
 const FLOWER = {
@@ -395,7 +397,6 @@ const MAT = {
   red: new THREE.MeshStandardMaterial({ color: COLORS.red, roughness: 0.5 }),
   blue: new THREE.MeshStandardMaterial({ color: COLORS.blue, roughness: 0.5 }),
   flower: new THREE.MeshStandardMaterial({ color: 0xf0a020, roughness: 0.5 }),
-  petal: new THREE.MeshStandardMaterial({ color: 0xffd34d, roughness: 0.5, side: THREE.DoubleSide }),
   preview: new THREE.LineDashedMaterial({ color: 0x7CFC9A, dashSize: 0.05, gapSize: 0.03, transparent: true, opacity: 0.9 }),
   previewBad: new THREE.LineDashedMaterial({ color: 0xff6b6b, dashSize: 0.05, gapSize: 0.03, transparent: true, opacity: 0.7 }),
 };
@@ -539,17 +540,19 @@ function buildFieldVisuals() {
     const x = sx * FRAME.halfW;
     for (const sz of [-1, 1]) cylinderMeshBetween({ x, y: 0, z: sz * FRAME.halfD }, { x, y: FRAME.apexY, z: 0 }, legR, MAT.alu, fg);
     mesh(new THREE.BoxGeometry(0.05, 0.012, 2 * FRAME.halfD + 0.05), MAT.darkAlu, fg, x, 0.006, 0);      // foot bar
-    // BIOBUZZ logo panel on the triangle face
-    const logo = canvasTexture(512, 256, (g, w, h) => {
-      g.fillStyle = '#f5c518'; g.fillRect(0, 0, w, h);
-      g.fillStyle = '#111'; g.font = '900 86px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('BIOBUZZ', w / 2, h / 2 - 10);
-      g.font = '600 26px system-ui, sans-serif'; g.fillText('FIRST TECH CHALLENGE 2026-27', w / 2, h / 2 + 52);
-      for (let i = 0; i < 9; i++) { g.fillStyle = i % 2 ? '#111' : '#f5c518'; }
-    });
-    const panel = mesh(new THREE.PlaneGeometry(0.56, 0.24), new THREE.MeshStandardMaterial({ map: logo, side: THREE.DoubleSide, roughness: 0.6 }), fg, x + sx * 0.02, 0.62, 0, false);
-    panel.rotation.y = sx * Math.PI / 2;
   }
   cylinderMeshBetween({ x: -FRAME.halfW, y: FRAME.apexY, z: 0 }, { x: FRAME.halfW, y: FRAME.apexY, z: 0 }, 0.02, MAT.alu, fg);
+  // BIOBUZZ logo panels on both faces of the lengthwise crossbar (Figure 9-8)
+  const logo = canvasTexture(1024, 160, (g, w, h) => {
+    g.fillStyle = '#f5c518'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#111'; g.font = '900 104px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('BIOBUZZ', w / 2, h / 2 - 8);
+    g.font = '600 22px system-ui, sans-serif'; g.fillText('FIRST TECH CHALLENGE · 2026-27', w / 2, h - 18);
+  });
+  const logoMat = new THREE.MeshStandardMaterial({ map: logo, roughness: 0.6 });
+  for (const sz of [-1, 1]) {
+    const panel = mesh(new THREE.PlaneGeometry(LOGO.halfW * 2, LOGO.y1 - LOGO.y0), logoMat, fg, 0, (LOGO.y0 + LOGO.y1) / 2, sz * LOGO.z, false);
+    panel.rotation.y = sz > 0 ? 0 : Math.PI;
+  }
 }
 function buildFieldColliders() {
   const b = staticBody();
@@ -566,6 +569,7 @@ function buildFieldColliders() {
   for (const sx of [-1, 1]) for (const sz of [-1, 1])
     capsuleBetween(b, { x: sx * FRAME.halfW, y: 0, z: sz * FRAME.halfD }, { x: sx * FRAME.halfW, y: FRAME.apexY, z: 0 }, 0.016);
   capsuleBetween(b, { x: -FRAME.halfW, y: FRAME.apexY, z: 0 }, { x: FRAME.halfW, y: FRAME.apexY, z: 0 }, 0.02);
+  cuboid(b, LOGO.halfW, (LOGO.y1 - LOGO.y0) / 2, LOGO.z, 0, (LOGO.y0 + LOGO.y1) / 2, 0, null, { restitution: 0.4 });   // logo panels
 }
 
 /* =====================================================================================================
@@ -609,15 +613,10 @@ class Flower {
       const a = Math.PI / 4 + k * Math.PI / 2, x = Math.sin(a) * F.pipeCircle, z = Math.cos(a) * F.pipeCircle;
       cylinderMeshBetween({ x, y: F.midY1, z }, { x, y: F.topY - 0.01, z }, F.pipeR, MAT.white, g);
     }
-    const bs = mesh(new THREE.CylinderGeometry(F.topR + 0.005, F.topR + 0.005, F.backstopH, 20, 1, true, Math.PI - 1.4, 2.8), MAT.petal, g, 0, F.topY + F.backstopH / 2, 0);
+    // Backstop: a short blocker on the wall side of the top ring
+    mesh(new THREE.CylinderGeometry(F.topR + 0.005, F.topR + 0.005, F.backstopH, 20, 1, true, Math.PI - 1.4, 2.8), MAT.darkAlu, g, 0, F.topY + F.backstopH / 2, 0);
     mesh(new THREE.BoxGeometry(0.0254, F.midY0 - F.lowH, 0.0254), MAT.darkAlu, g, 0, (F.midY0 + F.lowH) / 2, -F.inset + 0.0127);
     mesh(new THREE.BoxGeometry(0.04, 0.02, F.inset - F.topR), MAT.darkAlu, g, 0, F.topY - 0.005, -(F.inset + F.topR) / 2);
-    // Decorative petals on the wall
-    for (let k = 0; k < 6; k++) {
-      const p = mesh(new THREE.CircleGeometry(0.045, 16), MAT.petal, g, Math.cos(k * Math.PI / 3) * 0.07, F.topY + 0.06 + Math.sin(k * Math.PI / 3) * 0.07, -F.inset + 0.004, false);
-      p.scale.set(1, 0.55, 1); p.rotation.z = k * Math.PI / 3;
-    }
-    mesh(new THREE.CircleGeometry(0.035, 16), MAT.flower, g, 0, F.topY + 0.06, -F.inset + 0.005, false);
   }
   /** World position of the top opening center */
   topCenter() { return { x: this.pos.x, y: FLOWER.topY, z: this.pos.z }; }
@@ -835,8 +834,8 @@ class Ball {
  *     mouth while its rollers spin are pulled in and stored, up to 10.
  * ===================================================================================================== */
 class Robot {
-  constructor({ id, label, alliance, start, cfg, control, strategy }) {
-    Object.assign(this, { id, label, alliance, start, cfg: { ...cfg }, control, strategy });
+  constructor({ id, label, alliance, start, cfg, control, strategy, plates }) {
+    Object.assign(this, { id, label, alliance, start, cfg: { ...cfg }, control, strategy, plates });
     this.held = []; this.cmd = Robot.emptyCmd();
     this.turretYaw = 0; this.turretPitch = 0.75; this.manualYaw = 0; this.manualPitch = 0.75; this.manualSpeed = 6.0;
     this.intakeF = 0; this.intakeB = 0; this.flapUp = false; this.flapAnim = 0; this.autoAim = true;
@@ -1144,6 +1143,18 @@ class Robot {
     mesh(new THREE.BoxGeometry(2 * R.mouthHalfW, 0.006, 0.2), new THREE.MeshStandardMaterial({ color: this.alliance === 'red' ? 0xff9a9a : 0x9ac2ff, roughness: 0.4, transparent: true, opacity: 0.85 }), this.flap, 0, 0, 0.1);
     for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.006, 0.04, 0.2), MAT.alu, this.flap, sx * R.mouthHalfW, 0.02, 0.1);
     const hinge = mesh(new THREE.CylinderGeometry(0.008, 0.008, 2 * R.mouthHalfW, 8), MAT.alu, this.flap); hinge.rotation.z = Math.PI / 2;
+    // Side name plates: team number on the right side, the builder credit on the left side
+    if (this.plates) {
+      const [right, left] = this.plates;
+      const plate = (text, big) => new THREE.MeshStandardMaterial({ roughness: 0.5, map: canvasTexture(1024, 256, (c, w, h) => {
+        c.fillStyle = '#f4f4f0'; c.fillRect(0, 0, w, h); c.strokeStyle = this.alliance === 'red' ? '#c4161c' : '#1f52c4'; c.lineWidth = 18; c.strokeRect(9, 9, w - 18, h - 18);
+        c.fillStyle = '#111'; c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.font = big ? '900 200px system-ui, sans-serif' : '800 92px system-ui, sans-serif'; c.fillText(text, w / 2, h / 2 + 6, w - 60);
+      }) });
+      const pw = 2 * R.half - 0.05, ph = pw / 4;
+      const pr = mesh(new THREE.PlaneGeometry(pw, ph), plate(right, true), g, -(R.half + 0.002), 0.135, 0, false); pr.rotation.y = -Math.PI / 2;
+      const pl = mesh(new THREE.PlaneGeometry(pw, ph), plate(left, false), g, R.half + 0.002, 0.135, 0, false); pl.rotation.y = Math.PI / 2;
+    }
     // Label
     this.labelSprite = labelSprite(this.label, this.alliance === 'red' ? '#ff6b6b' : '#6ba6ff'); this.labelSprite.position.set(0, 0.78, 0); g.add(this.labelSprite);
   }
@@ -1450,7 +1461,8 @@ function readPad(idx) {
 }
 /** Driver toggles live on the robot so they persist across frames */
 function humanCommand(robot, kb, pad, frameEdges) {
-  const tog = robot.tog || (robot.tog = { intakeF: false, intakeB: false, flap: settings.flap === 'up', aim: settings.aim === 'auto' });
+  // Intakes start running; F/B (or A/B on a gamepad) turn them off and on again
+  const tog = robot.tog || (robot.tog = { intakeF: true, intakeB: robot.cfg.intake === 'double', flap: settings.flap === 'up', aim: settings.aim === 'auto' });
   let fwd = 0, str = 0, turn = 0, shoot = false, rev = false, slow = false, yawRate = 0, pitchRate = 0;
   const mec = robot.cfg.drive === 'mecanum';
   if (kb) {
@@ -1751,7 +1763,7 @@ function resetField() {
 
   // Robots: the player is always Red 1. The others follow the setup panel.
   const defs = [
-    { id: 'R1', label: 'RED 1 · YOU', alliance: 'red', control: 'human', cfg: { drive: settings.drive, intake: settings.intake } },
+    { id: 'R1', label: '6767 · YOU', plates: ['6767', 'Made by Spark Servos'], alliance: 'red', control: 'human', cfg: { drive: settings.drive, intake: settings.intake } },
     { id: 'R2', label: 'RED 2', alliance: 'red', control: settings.ctl.R2, cfg: settings.ctl.R2 === 'gp2' ? { drive: 'mecanum', intake: 'double' } : aiCfg('R2'), strategy: settings.strat.R2 },
     { id: 'B1', label: 'BLUE 1', alliance: 'blue', control: settings.ctl.B1, cfg: aiCfg('B1'), strategy: settings.strat.B1 },
     { id: 'B2', label: 'BLUE 2', alliance: 'blue', control: settings.ctl.B2, cfg: aiCfg('B2'), strategy: settings.strat.B2 },
@@ -1975,6 +1987,8 @@ window.BIOBUZZ = {
   advance(sec) { const n = Math.round(sec / DT); for (let i = 0; i < n; i++) tick(); syncVisuals(); return match.phase; },
   render() { syncVisuals(); updateCamera(1); updatePreview(); if (renderer) renderer.render(scene, camera); },
   pause(v = true) { paused = v; },
+  /** Point a free camera at a spot and render (used for close-up screenshots) */
+  debugCam(pos, look) { settings.cam = 'orbit'; syncVisuals(); camera.position.set(...pos); camera.lookAt(...look); if (controls) controls.target.set(...look); if (renderer) renderer.render(scene, camera); },
   reset: () => resetField(), startMatch: () => match.begin('match'), startFree: () => match.startFree(), startRecord: () => match.begin('record'),
   /** Gently place balls in the up CELL of a HIVE (for calibration tests). Returns the number placed. */
   fillCell(alliance, nP, nN = 0, dropH = 0.01) {
