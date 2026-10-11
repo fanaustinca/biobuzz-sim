@@ -1,0 +1,2004 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BIOBUZZ Simulator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%23f5c518%22/%3E%3C/svg%3E">
+<!--
+  BIOBUZZ FTC Simulator — a single-file 3D FIRST Tech Challenge simulator for the 2026-2027 BIOBUZZ season.
+
+  Rendering: Three.js r170.  Physics: Rapier 3D (WASM, rapier3d-compat 0.14), fixed 120 Hz timestep.
+
+  Field geometry comes from the BIOBUZZ Competition Manual (Section 9, TU04) and the Event Field Setup Guide (V1.0):
+    • 144" x 144" field of 36 tiles; red alliance on the left from the audience, blue on the right.
+    • HIVE structure at field center: frame 49.46" wide x 38.95" deep, pivot axis 43.95" above the tiles.
+      Two HIVES (red / blue) whose centers are 25.5" apart. Each HIVE is 42.91" long with a CELL on each end.
+      Each CELL is 12.04" deep, and the CELLS are 18.84" apart. The opening is a 20" x 14" pentagon,
+      and the HIVE rests tilted 30° on a damper.
+      Calibration (Field Guide §12): a HIVE tips with 8 POLLEN, or with 3 NECTAR + 3 POLLEN; 7 POLLEN or 3N + 2P does not tip.
+    • 4 FLOWERS on the perimeter. Each has a 4" top opening 21.5" above the tiles, a 1.25" backstop, a 3.55" tall retrieval
+      opening at the bottom, and a lower ring with a 2.79" hole for the bottom POLLEN.
+    • LOADING ZONES are 23" x 11", red on tile A5 and blue on tile F2. GARDENS are 23" x 2", red at A1 and blue at F6.
+    • POLLEN: 2.8" yellow balls (40). NECTAR: 3.6" red/blue balls (8 per alliance: 3 in the up CELL, 5 with the human player).
+  Point values follow Table 10-2: LEAVE 3; PARK 5 / 5; HIVE TIP 20 / 20; ball left in an up CELL 2; bottom NECTAR bonus 5;
+  ball in an owned FLOWER 2; ball in the GARDEN 1.
+
+  Everything below the manual's published numbers (ball masses, robot mass/traction, and the HIVE ballast model) is an
+  engineering estimate. Each one is called out where it is used.
+-->
+<style>
+  :root {
+    --bg: #0d1117; --panel: rgba(13,17,23,0.86); --line: rgba(255,255,255,0.12); --text: #e6edf3; --muted: #8b949e;
+    --red: #e5484d; --blue: #3e8bff; --yellow: #f5c518; --green: #3fb950; --accent: #f5c518;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #view { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(6px); }
+  /* Scoreboard */
+  #score { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: stretch;
+    overflow: hidden; min-width: 420px; user-select: none; }
+  #score .side { width: 130px; padding: 6px 10px; text-align: center; }
+  #score .side.red { background: linear-gradient(180deg, rgba(229,72,77,.9), rgba(160,30,35,.9)); }
+  #score .side.blue { background: linear-gradient(180deg, rgba(62,139,255,.9), rgba(25,80,180,.9)); }
+  #score .pts { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  #score .sub { font-size: 11px; opacity: .9; }
+  #score .mid { flex: 1; padding: 6px 12px; text-align: center; }
+  #timer { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+  #phase { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--accent); }
+  /* Config panel */
+  #cfg { position: fixed; top: 10px; left: 10px; width: 270px; max-height: calc(100% - 20px); overflow-y: auto; padding: 10px 12px; }
+  #cfg h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .5px; }
+  #cfg h1 b { color: var(--yellow); }
+  #cfg h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin: 12px 0 6px;
+    border-top: 1px solid var(--line); padding-top: 8px; }
+  #cfg .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
+  #cfg .row > span { color: var(--muted); white-space: nowrap; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { background: transparent; color: var(--text); border: 0; padding: 4px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--yellow); color: #111; font-weight: 700; }
+  .btn { background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
+    font: inherit; cursor: pointer; }
+  .btn:hover { background: #30363d; }
+  .btn.primary { background: var(--yellow); color: #111; font-weight: 700; border-color: transparent; }
+  .btn.rec { background: #8e1b1f; border-color: #e5484d; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  select { background: #21262d; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px; font: inherit; font-size: 12px; }
+  #cfg .note { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  #cfgToggle { position: fixed; top: 10px; left: 10px; display: none; }
+  /* Robot status */
+  #status { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); padding: 8px 14px; display: flex; gap: 16px; align-items: center; }
+  #slots { display: flex; gap: 4px; }
+  #slots i { width: 16px; height: 16px; border-radius: 50%; border: 1px solid rgba(255,255,255,.25); display: inline-block; }
+  #slots i.pollen { background: var(--yellow); width: 13px; height: 13px; margin-top: 1.5px; }
+  #slots i.red { background: var(--red); } #slots i.blue { background: var(--blue); }
+  .stat { text-align: center; } .stat b { display: block; font-size: 13px; } .stat small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+  #lock.ok { color: var(--green); } #lock.bad { color: #ff7b72; } #lock.wait { color: var(--yellow); }
+  /* Help + toast + results */
+  #help { position: fixed; right: 10px; top: 10px; width: 300px; padding: 10px 12px; font-size: 12px; }
+  #help h3 { margin: 0 0 6px; font-size: 13px; }
+  #help table { width: 100%; border-collapse: collapse; } #help td { padding: 1px 0; vertical-align: top; }
+  #help td:first-child { color: var(--yellow); white-space: nowrap; padding-right: 8px; font-family: ui-monospace, monospace; font-size: 11px; }
+  #toast { position: fixed; top: 92px; left: 50%; transform: translateX(-50%); padding: 8px 14px; pointer-events: none;
+    opacity: 0; transition: opacity .25s; font-weight: 600; }
+  #toast.show { opacity: 1; }
+  #banner { position: fixed; top: 40%; left: 50%; transform: translate(-50%,-50%); font-size: 64px; font-weight: 900;
+    letter-spacing: 4px; text-shadow: 0 4px 24px rgba(0,0,0,.6); pointer-events: none; opacity: 0; transition: opacity .2s; }
+  #banner.show { opacity: 1; }
+  #results { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.55); }
+  #results .card { width: min(620px, 94vw); padding: 16px 18px; }
+  #results h2 { margin: 0 0 10px; text-align: center; }
+  #results table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  #results th, #results td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+  #results th:first-child, #results td:first-child { text-align: left; color: var(--muted); }
+  #results .r { color: #ff8a8e; } #results .b { color: #7fb2ff; }
+  #results tr.total td { font-weight: 800; font-size: 16px; color: var(--text); }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--bg); }
+  #gp { color: var(--muted); font-size: 11px; }
+  @media (max-width: 900px) { #help { display: none; } #cfg { width: 230px; } #score { min-width: 0; } #score .side { width: 90px; } }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js"
+} }
+</script>
+</head>
+<body>
+<div id="view"></div>
+<div id="loading">Loading BIOBUZZ physics…</div>
+
+<div id="score" class="panel">
+  <div class="side red"><div class="pts" id="sRed">0</div><div class="sub" id="sRedSub">TIPS 0 · HP NECTAR 5</div></div>
+  <div class="mid"><div id="timer">2:30</div><div id="phase">PRE-MATCH</div></div>
+  <div class="side blue"><div class="pts" id="sBlue">0</div><div class="sub" id="sBlueSub">TIPS 0 · HP NECTAR 5</div></div>
+</div>
+
+<button id="cfgToggle" class="btn">☰ Setup</button>
+<div id="cfg" class="panel">
+  <h1><b>BIOBUZZ</b> FTC Simulator</h1>
+  <div class="note">2026-27 season · Three.js + Rapier physics</div>
+
+  <h2>Match</h2>
+  <div class="btns">
+    <button class="btn primary" id="bStart">▶ Start Match</button>
+    <button class="btn" id="bFree">Free Practice</button>
+    <button class="btn rec" id="bRec">● Record Auto</button>
+    <button class="btn" id="bReset">↺ Reset Field</button>
+  </div>
+  <div class="row"><span>Auto routine</span><b id="autoStatus">none</b></div>
+  <div class="btns">
+    <button class="btn" id="bAutoClear">Clear auto</button>
+    <button class="btn" id="bAutoExport">Export / Import</button>
+  </div>
+
+  <h2>Your robot (Red 1)</h2>
+  <div class="row"><span>Drivetrain</span><div class="seg" data-key="drive"><button data-v="mecanum">Mecanum</button><button data-v="4wd">4-Wheel</button></div></div>
+  <div class="row"><span>Intake</span><div class="seg" data-key="intake"><button data-v="single">Single</button><button data-v="double">Double</button></div></div>
+  <div class="row"><span>Cover flap</span><div class="seg" data-key="flap"><button data-v="down">Shooter</button><button data-v="up">Flower</button></div></div>
+  <div class="row"><span>Turret aim</span><div class="seg" data-key="aim"><button data-v="auto">Auto</button><button data-v="manual">Manual</button></div></div>
+  <div class="row"><span>Drive frame</span><div class="seg" data-key="frame"><button data-v="robot">Robot</button><button data-v="field">Field</button></div></div>
+
+  <h2>Other robots</h2>
+  <div class="row"><span>Red 2</span><span><select id="ctlR2"><option value="ai">AI</option><option value="gp2">Gamepad 2</option><option value="off">Off</option></select>
+    <select id="strR2"><option value="offense">Offense</option><option value="defense">Defense</option><option value="mixed">Mixed</option></select></span></div>
+  <div class="row"><span>Blue 1</span><span><select id="ctlB1"><option value="ai">AI</option><option value="off">Off</option></select>
+    <select id="strB1"><option value="offense">Offense</option><option value="defense">Defense</option><option value="mixed" selected>Mixed</option></select></span></div>
+  <div class="row"><span>Blue 2</span><span><select id="ctlB2"><option value="ai">AI</option><option value="off">Off</option></select>
+    <select id="strB2"><option value="offense">Offense</option><option value="defense" selected>Defense</option><option value="mixed">Mixed</option></select></span></div>
+  <div class="row"><span>AI drivetrains</span><select id="aiDrive"><option value="mixed">Mixed</option><option value="mecanum">Mecanum</option><option value="4wd">4-Wheel</option></select></div>
+
+  <h2>View</h2>
+  <div class="row"><span>Camera</span><select id="cam"><option value="driver">Red driver station</option><option value="chase">Chase robot</option><option value="top">Top-down</option><option value="audience">Audience</option><option value="orbit">Free orbit</option></select></div>
+  <div class="row"><span>Sim speed</span><select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></div>
+  <div class="row"><span>Trajectory preview</span><div class="seg" data-key="preview"><button data-v="on">On</button><button data-v="off">Off</button></div></div>
+  <div id="gp">No gamepad detected. Press any button on an FTC controller to connect it.</div>
+</div>
+
+<div id="status" class="panel">
+  <div class="stat"><div id="slots"></div><small id="heldTxt">0 / 10 held</small></div>
+  <div class="stat"><b id="intakeTxt">OFF</b><small>Intake</small></div>
+  <div class="stat"><b id="flapTxt">SHOOTER</b><small>Flap</small></div>
+  <div class="stat"><b id="lock" class="bad">—</b><small id="lockSub">Target</small></div>
+  <div class="stat"><b id="driveTxt">MECANUM</b><small>Drive</small></div>
+</div>
+
+<div id="help" class="panel">
+  <h3>Controls <span style="color:var(--muted);font-weight:400">(H to hide)</span></h3>
+  <table>
+    <tr><td>W A S D</td><td>Drive / strafe (4WD: A/D turn)</td></tr>
+    <tr><td>Q E · ← →</td><td>Rotate</td></tr>
+    <tr><td>Space</td><td>Shoot / place in flower</td></tr>
+    <tr><td>F · B</td><td>Toggle front / back intake</td></tr>
+    <tr><td>R (hold)</td><td>Reverse intakes (eject)</td></tr>
+    <tr><td>G</td><td>Flip cover flap (shoot ↔ flower)</td></tr>
+    <tr><td>T</td><td>Auto-aim on/off</td></tr>
+    <tr><td>Z X · ↑ ↓</td><td>Manual turret yaw · hood angle</td></tr>
+    <tr><td>Shift</td><td>Precision (slow) drive</td></tr>
+    <tr><td>C · Enter · P</td><td>Camera · start match · pause</td></tr>
+  </table>
+  <h3 style="margin-top:8px">Gamepad (FTC / standard)</h3>
+  <table>
+    <tr><td>L stick · R stick X</td><td>Drive/strafe · rotate</td></tr>
+    <tr><td>RT · LT</td><td>Shoot · reverse intake</td></tr>
+    <tr><td>A · B</td><td>Front · back intake toggle</td></tr>
+    <tr><td>Y · X</td><td>Flap · auto-aim toggle</td></tr>
+    <tr><td>LB · RB</td><td>Slow · camera</td></tr>
+    <tr><td>D-pad</td><td>Manual turret / hood</td></tr>
+    <tr><td>Start</td><td>Start match / pause</td></tr>
+  </table>
+</div>
+<div id="toast" class="panel"></div>
+<div id="banner"></div>
+<div id="results"><div class="card panel"><h2 id="resTitle">Match Results</h2><table id="resTable"></table>
+  <div style="text-align:center;margin-top:12px"><button class="btn primary" id="bResClose">Close</button></div></div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import RAPIER from 'rapier';
+
+/* =====================================================================================================
+ * 1. CONSTANTS. All units are SI (meters, kilograms, seconds). IN converts the manual's inches.
+ * ===================================================================================================== */
+const IN = 0.0254;
+const G = 9.81;
+const DT = 1 / 120;                       // fixed physics step
+const FH = 72 * IN;                       // field half-size (inside of perimeter walls)
+const WALL_VIS_H = 12.5 * IN;             // visible perimeter height
+const AUTO_LEN = 30, TRANSITION_LEN = 8, TELEOP_LEN = 120;
+
+// Scoring elements. Masses are estimates for Gopher ResisDent polyethylene balls. The NECTAR/POLLEN mass ratio (≈1.6)
+// is chosen so that the published HIVE calibration holds: 3 NECTAR + 3 POLLEN tips the HIVE, and so do 8 POLLEN.
+const BALL = {
+  pollen: { r: 2.8 * IN / 2, m: 0.028, restitution: 0.55, friction: 0.65 },
+  nectar: { r: 3.6 * IN / 2, m: 0.045, restitution: 0.55, friction: 0.65 },
+};
+const COLORS = { pollen: 0xf2cf1d, red: 0xd8262c, blue: 0x2459d6, redTape: 0xd22a2a, blueTape: 0x2d6cff };
+
+// HIVE geometry (Figures 9-8 through 9-11)
+const HIVE = {
+  pivotY: 43.95 * IN,
+  centerX: 25.5 * IN / 2,                 // HIVE center-to-center is 25.5"
+  tilt: 30 * Math.PI / 180,
+  cellInner: 18.84 * IN / 2,              // gap between the CELLS
+  cellOuter: 42.91 * IN / 2,              // overall HIVE length
+  halfW: 10 * IN,                         // opening 20" wide
+  shoulder: 7.61 * IN,                    // pentagon shoulder height
+  peak: 14 * IN,                          // pentagon peak (opening 14" tall)
+  floorY: -1.2 * IN,                      // CELL floor relative to the pivot axis (fits the 53.5"/65.6" opening heights)
+  wall: 0.006,
+  mass: 2.6,                              // estimated HIVE mass (polycarbonate CELLS + aluminum hub)
+  inertia: 0.16,
+};
+const FRAME = { halfW: 49.46 * IN / 2, halfD: 38.95 * IN / 2, apexY: 45 * IN };
+
+// FLOWER geometry (Section 9.7)
+const FLOWER = {
+  inset: 3 * IN,                          // axis distance from the wall face
+  topY: 21.5 * IN, topR: 4 * IN / 2,
+  midY0: 0.100, midY1: 0.120,             // middle ring sits above the 3.55" retrieval opening
+  lowH: 0.4 * IN, lowHoleR: 2.79 * IN / 2,
+  pipeR: 0.0076, pipeCircle: 0.0585,
+  backstopH: 1.25 * IN,
+};
+
+// Robot (18" x 18" starting envelope)
+const ROBOT = {
+  half: 9 * IN, mouthDepth: 0.13, mouthHalfW: 0.165, rail: 0.032,
+  clearance: 0.012, chassisTop: 0.20, deckTop: 0.30,
+  mass: 15.0, capacity: 10,
+  turretY: 0.45,                          // launch pivot height
+};
+const DRIVE = {
+  mecanum: { vmax: 1.55, strafe: 0.85, wmax: 3.6, mu: 0.72, muLat: 0.72, tau: 0.10 },
+  '4wd':   { vmax: 1.70, strafe: 0.0,  wmax: 3.2, mu: 1.05, muLat: 1.25, tau: 0.10 },
+};
+const SHOOTER = { vmax: 8.0, pitchMin: 12 * Math.PI / 180, pitchMax: 80 * Math.PI / 180, interval: 0.22, yawRate: 7.0, pitchRate: 5.0 };
+
+// Collision groups: (membership << 16) | filter
+const GR = { STATIC: 1, BALL: 2, ROBOT: 4, HIVE: 8 };
+const groups = (member, filter) => ((member & 0xffff) << 16) | (filter & 0xffff);
+const G_STATIC = groups(GR.STATIC, 0xffff);
+const G_BALL = groups(GR.BALL, 0xffff);
+const G_ROBOT = groups(GR.ROBOT, GR.STATIC | GR.BALL | GR.ROBOT);
+const G_HIVE = groups(GR.HIVE, GR.BALL);
+const Q_TRAJ = groups(GR.BALL, GR.STATIC | GR.HIVE | GR.ROBOT);   // trajectory-clearance queries
+
+// Zones (Field Setup Guide §8). Three.js coordinates: +x points to the blue wall, +z to the audience, y is up.
+const ZONES = {
+  loading: {
+    red:  { x0: -FH, x1: -FH + 11 * IN, z0: -48 * IN + 0.5 * IN, z1: -24 * IN - 0.5 * IN },
+    blue: { x0: FH - 11 * IN, x1: FH, z0: 24 * IN + 0.5 * IN, z1: 48 * IN - 0.5 * IN },
+  },
+  garden: {
+    red:  { x0: -FH, x1: -FH + 23 * IN, z0: FH - 2 * IN, z1: FH },
+    blue: { x0: FH - 23 * IN, x1: FH, z0: -FH, z1: -FH + 2 * IN },
+  },
+};
+// Four FLOWERS. Each has its center (x, z) and the inward wall normal angle (local +z points into the field).
+const FLOWERS_DEF = [
+  { x: -24 * IN, z: -FH + FLOWER.inset, rot: 0 },               // rear wall, red half
+  { x: 24 * IN, z: FH - FLOWER.inset, rot: Math.PI },           // audience wall, blue half
+  { x: -FH + FLOWER.inset, z: 24 * IN, rot: Math.PI / 2 },      // red wall, audience side
+  { x: FH - FLOWER.inset, z: -24 * IN, rot: -Math.PI / 2 },     // blue wall, rear side
+];
+
+/* =====================================================================================================
+ * 2. SMALL UTILITIES
+ * ===================================================================================================== */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const wrapAngle = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+const hyp = Math.hypot;
+const qYaw = (h) => ({ x: 0, y: Math.sin(h / 2), z: 0, w: Math.cos(h / 2) });
+const yawOf = (q) => 2 * Math.atan2(q.y, q.w);
+// Robot-local (lx, lz) → world offset, for a robot with heading h (forward = local +z = (sin h, cos h))
+const toWorld = (lx, lz, h) => ({ x: lx * Math.cos(h) + lz * Math.sin(h), z: -lx * Math.sin(h) + lz * Math.cos(h) });
+const toLocal = (wx, wz, h) => ({ x: wx * Math.cos(h) - wz * Math.sin(h), z: wx * Math.sin(h) + wz * Math.cos(h) });
+function mulberry32(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const inRect = (p, R, pad = 0) => p.x >= R.x0 - pad && p.x <= R.x1 + pad && p.z >= R.z0 - pad && p.z <= R.z1 + pad;
+function fmtTime(t) { t = Math.max(0, Math.ceil(t)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; }
+// Rotate a vector by a quaternion (avoids allocating Three objects in the physics loop)
+function qRot(q, v) {
+  const ix = q.w * v.x + q.y * v.z - q.z * v.y, iy = q.w * v.y + q.z * v.x - q.x * v.z,
+        iz = q.w * v.z + q.x * v.y - q.y * v.x, iw = -q.x * v.x - q.y * v.y - q.z * v.z;
+  return { x: ix * q.w + iw * -q.x + iy * -q.z - iz * -q.y, y: iy * q.w + iw * -q.y + iz * -q.x - ix * -q.z,
+           z: iz * q.w + iw * -q.z + ix * -q.y - iy * -q.x };
+}
+const qConj = (q) => ({ x: -q.x, y: -q.y, z: -q.z, w: q.w });
+
+/* =====================================================================================================
+ * 3. BALLISTICS. Exact projectile solver used for 100%-accurate auto-targeting.
+ *    Given a launch point p0, a target p1 and a desired arrival (descent) angle β, the parabola is unique:
+ *       tanθ = 2Δh/D + tanβ,   a = (Δh + D·tanβ)/D²,   v² = g / (2a·cos²θ)
+ *    Rapier integrates with semi-implicit Euler, so its discrete path sits g·dt·t/2 below the analytic parabola.
+ *    Adding g·dt/2 to the launch vy cancels that offset exactly. No drag is simulated in flight, so a shot
+ *    that clears all geometry lands on target every time.
+ * ===================================================================================================== */
+function solveArc(p0, p1, beta) {
+  const dx = p1.x - p0.x, dz = p1.z - p0.z, dh = p1.y - p0.y;
+  const D = Math.hypot(dx, dz);
+  if (D < 0.02) return null;
+  const tb = Math.tan(beta);
+  const a = (dh + D * tb) / (D * D);
+  if (a <= 0) return null;
+  const tt = 2 * dh / D + tb;
+  const theta = Math.atan(tt);
+  const c2 = 1 / (1 + tt * tt);
+  const v = Math.sqrt(G / (2 * a * c2));
+  const vh = v * Math.cos(theta), vy = v * Math.sin(theta);
+  return { vel: { x: dx / D * vh, y: vy, z: dz / D * vh }, speed: v, pitch: theta, yaw: Math.atan2(dx, dz), T: D / vh, D };
+}
+const trajAt = (p0, vel, t) => ({ x: p0.x + vel.x * t, y: p0.y + vel.y * t - 0.5 * G * t * t, z: p0.z + vel.z * t });
+
+/* =====================================================================================================
+ * 4. APP STATE + SETTINGS
+ * ===================================================================================================== */
+const params = new URLSearchParams(location.search);
+const HEADLESS = params.has('headless');
+const settings = {
+  drive: 'mecanum', intake: 'single', flap: 'down', aim: 'auto', frame: 'robot', preview: 'on',
+  ctl: { R2: 'ai', B1: 'ai', B2: 'ai' }, strat: { R2: 'offense', B1: 'mixed', B2: 'defense' }, aiDrive: 'mixed',
+  cam: 'driver', speed: 1,
+};
+try { Object.assign(settings, JSON.parse(localStorage.getItem('biobuzz_settings_v1') || '{}')); } catch (e) { /* storage unavailable */ }
+function saveSettings() { try { localStorage.setItem('biobuzz_settings_v1', JSON.stringify(settings)); } catch (e) { /* ignore */ } }
+
+/* =====================================================================================================
+ * 5. RENDERING SETUP. WebGL is optional: without it (some headless setups) the simulation still runs and
+ *    only drawing is skipped.
+ * ===================================================================================================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141b);
+scene.fog = new THREE.Fog(0x10141b, 12, 30);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.03, 80);
+let renderer = null;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.getElementById('view').appendChild(renderer.domElement);
+} catch (e) { console.warn('WebGL unavailable: running physics only.', e); renderer = null; }
+const controls = renderer ? new OrbitControls(camera, renderer.domElement) : null;
+if (controls) { controls.target.set(0, 0.3, 0); controls.enableDamping = true; controls.maxPolarAngle = Math.PI * 0.49; controls.enabled = false; }
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer?.setSize(innerWidth, innerHeight); });
+
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x30302a, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-3, 7, 4); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3, near: 1, far: 16 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xbfd4ff, 0.6); fill.position.set(4, 5, -3); scene.add(fill);
+
+// Shared materials
+const MAT = {
+  alu: new THREE.MeshStandardMaterial({ color: 0xb8bec6, metalness: 0.8, roughness: 0.35 }),
+  darkAlu: new THREE.MeshStandardMaterial({ color: 0x4a4f57, metalness: 0.7, roughness: 0.4 }),
+  black: new THREE.MeshStandardMaterial({ color: 0x1b1d21, roughness: 0.8 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.95 }),
+  white: new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.5 }),
+  poly: new THREE.MeshPhysicalMaterial({ color: 0xdfefff, transparent: true, opacity: 0.18, roughness: 0.05, metalness: 0, side: THREE.DoubleSide, depthWrite: false }),
+  pollen: new THREE.MeshStandardMaterial({ color: COLORS.pollen, roughness: 0.55 }),
+  red: new THREE.MeshStandardMaterial({ color: COLORS.red, roughness: 0.5 }),
+  blue: new THREE.MeshStandardMaterial({ color: COLORS.blue, roughness: 0.5 }),
+  flower: new THREE.MeshStandardMaterial({ color: 0xf0a020, roughness: 0.5 }),
+  petal: new THREE.MeshStandardMaterial({ color: 0xffd34d, roughness: 0.5, side: THREE.DoubleSide }),
+  preview: new THREE.LineDashedMaterial({ color: 0x7CFC9A, dashSize: 0.05, gapSize: 0.03, transparent: true, opacity: 0.9 }),
+  previewBad: new THREE.LineDashedMaterial({ color: 0xff6b6b, dashSize: 0.05, gapSize: 0.03, transparent: true, opacity: 0.7 }),
+};
+const allianceMat = (a) => (a === 'red' ? MAT.red : MAT.blue);
+function mesh(geo, mat, parent, x = 0, y = 0, z = 0, shadow = true) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  if (shadow) { m.castShadow = true; m.receiveShadow = true; }
+  parent?.add(m); return m;
+}
+function canvasTexture(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+function labelSprite(text, color) {
+  const tex = canvasTexture(256, 96, (g, w, h) => {
+    g.fillStyle = 'rgba(0,0,0,0.55)'; g.beginPath(); g.roundRect(4, 4, w - 8, h - 8, 20); g.fill();
+    g.strokeStyle = color; g.lineWidth = 6; g.stroke();
+    g.fillStyle = '#fff'; g.font = 'bold 44px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, w / 2, h / 2 + 2);
+  });
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  s.scale.set(0.27, 0.1, 1); s.renderOrder = 10; return s;
+}
+
+/* =====================================================================================================
+ * 6. PHYSICS WORLD + SIMULATION CONTAINER
+ * ===================================================================================================== */
+let world;                 // RAPIER.World, rebuilt on every field reset
+const sim = {
+  time: 0, balls: [], robots: [], hives: [], flowers: [], player: null, rng: mulberry32(1234),
+  fieldGroup: new THREE.Group(), dynGroup: new THREE.Group(),
+};
+scene.add(sim.fieldGroup, sim.dynGroup);
+
+function staticBody(x = 0, y = 0, z = 0, rot = 0) {
+  return world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z).setRotation(qYaw(rot)));
+}
+function cuboid(body, hx, hy, hz, x, y, z, q, opts = {}) {
+  let d = RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(x, y, z)
+    .setFriction(opts.friction ?? 0.5).setRestitution(opts.restitution ?? 0.3).setCollisionGroups(opts.groups ?? G_STATIC);
+  if (q) d = d.setRotation(q);
+  if (opts.density !== undefined) d = d.setDensity(opts.density);
+  return world.createCollider(d, body);
+}
+const qAxis = (ax, ay, az, ang) => { const s = Math.sin(ang / 2); return { x: ax * s, y: ay * s, z: az * s, w: Math.cos(ang / 2) }; };
+function qMul(a, b) { return { x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+  z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z }; }
+// Capsule between two points (used for frame legs and flower pipes)
+function capsuleBetween(body, a, b, r, opts = {}) {
+  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, L = Math.hypot(dx, dy, dz);
+  const dir = new THREE.Vector3(dx / L, dy / L, dz / L);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  const d = RAPIER.ColliderDesc.capsule(L / 2, r).setTranslation((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+    .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setFriction(opts.friction ?? 0.4).setRestitution(opts.restitution ?? 0.4)
+    .setCollisionGroups(opts.groups ?? G_STATIC);
+  return world.createCollider(d, body);
+}
+// A ring built from tangential cuboid segments in a body's local frame (axis = local y)
+function ringColliders(body, cx, cz, y0, y1, rIn, thick, n, arcFrom = 0, arcLen = Math.PI * 2, opts = {}) {
+  const rc = rIn + thick / 2, seg = arcLen / n, half = rc * Math.tan(seg / 2) * 1.08;
+  for (let i = 0; i < n; i++) {
+    const a = arcFrom + seg * (i + 0.5);
+    cuboid(body, half, (y1 - y0) / 2, thick / 2, cx + Math.sin(a) * rc, (y0 + y1) / 2, cz + Math.cos(a) * rc, qAxis(0, 1, 0, a),
+      { restitution: 0.35, friction: 0.4, ...opts });
+  }
+}
+function cylinderMeshBetween(a, b, r, mat, parent, seg = 10) {
+  const va = new THREE.Vector3(a.x, a.y, a.z), vb = new THREE.Vector3(b.x, b.y, b.z);
+  const L = va.distanceTo(vb);
+  const m = mesh(new THREE.CylinderGeometry(r, r, L, seg), mat, parent);
+  m.position.copy(va).add(vb).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vb.clone().sub(va).normalize());
+  return m;
+}
+
+/* =====================================================================================================
+ * 7. FIELD: tiles, perimeter, tape zones, alliance areas, and the HIVE frame.
+ *    Visuals are built once. Colliders are rebuilt into each new physics world.
+ * ===================================================================================================== */
+let fieldVisualsBuilt = false;
+const trayBalls = { red: [], blue: [] };
+function buildFieldVisuals() {
+  if (fieldVisualsBuilt) return; fieldVisualsBuilt = true;
+  const fg = sim.fieldGroup;
+  // Arena floor
+  mesh(new THREE.PlaneGeometry(14, 14).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x23272e, roughness: 1 }), fg, 0, -0.016, 0, false).receiveShadow = true;
+  // 36 soft foam tiles, 24" each, with interlocking seams
+  const tileTex = canvasTexture(256, 256, (g, w, h) => {
+    g.fillStyle = '#5d636b'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 2200; i++) { g.fillStyle = `rgba(${Math.random() < .5 ? '255,255,255' : '0,0,0'},${Math.random() * 0.06})`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
+    g.strokeStyle = 'rgba(20,22,26,0.9)'; g.lineWidth = 3;
+    g.beginPath();
+    for (let i = 0; i <= 8; i++) { const t = i / 8 * w; g.moveTo(t, 0); g.lineTo(t, 6); g.moveTo(t, h); g.lineTo(t, h - 6); g.moveTo(0, t); g.lineTo(6, t); g.moveTo(w, t); g.lineTo(w - 6, t); }
+    g.stroke(); g.strokeRect(1, 1, w - 2, h - 2);
+  });
+  const tileMat = new THREE.MeshStandardMaterial({ map: tileTex, roughness: 0.95 });
+  const tileGeo = new THREE.BoxGeometry(24 * IN, 0.015, 24 * IN);
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
+    const t = mesh(tileGeo, tileMat, fg, -FH + (i + 0.5) * 24 * IN, -0.0075, -FH + (j + 0.5) * 24 * IN, false); t.receiveShadow = true;
+  }
+  // Perimeter: polycarbonate panels with aluminum rails and posts
+  const wallMat = new THREE.MeshPhysicalMaterial({ color: 0xcfe3ff, transparent: true, opacity: 0.22, roughness: 0.1, side: THREE.DoubleSide, depthWrite: false });
+  for (const [x, z, ry] of [[0, -FH - 0.01, 0], [0, FH + 0.01, 0], [-FH - 0.01, 0, Math.PI / 2], [FH + 0.01, 0, Math.PI / 2]]) {
+    const w = mesh(new THREE.PlaneGeometry(2 * FH + 0.04, WALL_VIS_H), wallMat, fg, x, WALL_VIS_H / 2, z, false); w.rotation.y = ry;
+    const rail = mesh(new THREE.BoxGeometry(2 * FH + 0.06, 0.03, 0.04), MAT.alu, fg, x, WALL_VIS_H, z); rail.rotation.y = ry;
+    const base = mesh(new THREE.BoxGeometry(2 * FH + 0.06, 0.05, 0.04), MAT.darkAlu, fg, x, 0.025, z); base.rotation.y = ry;
+    for (let k = -3; k <= 3; k++) {
+      const p = mesh(new THREE.BoxGeometry(0.04, WALL_VIS_H, 0.04), MAT.alu, fg, x, WALL_VIS_H / 2, z);
+      if (ry) p.position.z = k * 24 * IN; else p.position.x = k * 24 * IN;
+    }
+  }
+  // Tape (2" gaffer) helper
+  const tape = (x0, z0, x1, z1, color) => {
+    const m = mesh(new THREE.PlaneGeometry(Math.abs(x1 - x0), Math.abs(z1 - z0)).rotateX(-Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.7 }), fg, (x0 + x1) / 2, 0.0015, (z0 + z1) / 2, false);
+    m.receiveShadow = true;
+  };
+  const T = 2 * IN;
+  for (const a of ['red', 'blue']) {
+    const c = a === 'red' ? COLORS.redTape : COLORS.blueTape, L = ZONES.loading[a], Gd = ZONES.garden[a];
+    // LOADING ZONE: 3 tape segments, tape inside the zone (outer edges define the zone)
+    const inner = a === 'red' ? L.x1 : L.x0, sgn = a === 'red' ? -1 : 1;
+    tape(inner, L.z0, inner + sgn * T, L.z1, c);
+    tape(L.x0, L.z0, L.x1, L.z0 + T, c); tape(L.x0, L.z1 - T, L.x1, L.z1, c);
+    // GARDEN: 23" x 2" strip in the corner
+    tape(Gd.x0, Gd.z0, Gd.x1, Gd.z1, c);
+    // ALLIANCE AREA outside the field (97" wide x 54" deep, spans tile seams 1..5)
+    const ax = a === 'red' ? -FH - 0.05 - 54 * IN / 2 : FH + 0.05 + 54 * IN / 2;
+    mesh(new THREE.PlaneGeometry(54 * IN, 97 * IN).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: c, transparent: true, opacity: 0.25 }), fg, ax, -0.012, 0, false);
+    // Scoring element tray holding the 5 human-player NECTAR
+    const tx = a === 'red' ? -FH - 0.6 : FH + 0.6;
+    mesh(new THREE.BoxGeometry(0.22, 0.04, 0.55), MAT.darkAlu, fg, tx, 0.40, 0);
+    mesh(new THREE.BoxGeometry(0.06, 0.40, 0.06), MAT.darkAlu, fg, tx, 0.20, 0);
+    for (let i = 0; i < 5; i++) {
+      const b = mesh(new THREE.SphereGeometry(BALL.nectar.r, 20, 14), allianceMat(a), fg, tx, 0.42 + BALL.nectar.r, -0.2 + i * 0.1);
+      trayBalls[a].push(b);
+    }
+  }
+  // HIVE frame: two triangular aluminum structures joined at the apex by a crossbar
+  const legR = 0.016;
+  for (const sx of [-1, 1]) {
+    const x = sx * FRAME.halfW;
+    for (const sz of [-1, 1]) cylinderMeshBetween({ x, y: 0, z: sz * FRAME.halfD }, { x, y: FRAME.apexY, z: 0 }, legR, MAT.alu, fg);
+    mesh(new THREE.BoxGeometry(0.05, 0.012, 2 * FRAME.halfD + 0.05), MAT.darkAlu, fg, x, 0.006, 0);      // foot bar
+    // BIOBUZZ logo panel on the triangle face
+    const logo = canvasTexture(512, 256, (g, w, h) => {
+      g.fillStyle = '#f5c518'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#111'; g.font = '900 86px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('BIOBUZZ', w / 2, h / 2 - 10);
+      g.font = '600 26px system-ui, sans-serif'; g.fillText('FIRST TECH CHALLENGE 2026-27', w / 2, h / 2 + 52);
+      for (let i = 0; i < 9; i++) { g.fillStyle = i % 2 ? '#111' : '#f5c518'; }
+    });
+    const panel = mesh(new THREE.PlaneGeometry(0.56, 0.24), new THREE.MeshStandardMaterial({ map: logo, side: THREE.DoubleSide, roughness: 0.6 }), fg, x + sx * 0.02, 0.62, 0, false);
+    panel.rotation.y = sx * Math.PI / 2;
+  }
+  cylinderMeshBetween({ x: -FRAME.halfW, y: FRAME.apexY, z: 0 }, { x: FRAME.halfW, y: FRAME.apexY, z: 0 }, 0.02, MAT.alu, fg);
+}
+function buildFieldColliders() {
+  const b = staticBody();
+  // Floor (top of tiles = y 0). Foam tiles absorb energy, so restitution is low.
+  cuboid(b, 4, 0.1, 4, 0, -0.1, 0, null, { friction: 0.8, restitution: 0.25 });
+  // Perimeter walls. Colliders extend well above the visible wall to emulate the reintroduction of balls that leave the field.
+  const H = 3.5, t = 0.05;
+  cuboid(b, FH + t * 2, H / 2, t, 0, H / 2, -FH - t, null, { restitution: 0.45 });
+  cuboid(b, FH + t * 2, H / 2, t, 0, H / 2, FH + t, null, { restitution: 0.45 });
+  cuboid(b, t, H / 2, FH + t * 2, -FH - t, H / 2, 0, null, { restitution: 0.45 });
+  cuboid(b, t, H / 2, FH + t * 2, FH + t, H / 2, 0, null, { restitution: 0.45 });
+  cuboid(b, FH + 0.1, 0.05, FH + 0.1, 0, 4.2, 0, null);     // ceiling well above any legal shot
+  // HIVE frame legs and crossbar
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    capsuleBetween(b, { x: sx * FRAME.halfW, y: 0, z: sz * FRAME.halfD }, { x: sx * FRAME.halfW, y: FRAME.apexY, z: 0 }, 0.016);
+  capsuleBetween(b, { x: -FRAME.halfW, y: FRAME.apexY, z: 0 }, { x: FRAME.halfW, y: FRAME.apexY, z: 0 }, 0.02);
+}
+
+/* =====================================================================================================
+ * 8. FLOWERS (×4). Built in a local frame: the origin is on the floor at the flower axis, local +z points into
+ *    the field, and the perimeter wall is at local z = -inset.
+ * ===================================================================================================== */
+class Flower {
+  constructor(def, idx) {
+    this.idx = idx; this.def = def; this.pos = { x: def.x, z: def.z }; this.rot = def.rot;
+    this.normal = { x: Math.sin(def.rot), z: Math.cos(def.rot) };
+    this.group = new THREE.Group(); this.group.position.set(def.x, 0, def.z); this.group.rotation.y = def.rot;
+    sim.fieldGroup.add(this.group);
+    this.buildVisual();
+  }
+  buildColliders() {
+    const F = FLOWER, b = staticBody(this.def.x, 0, this.def.z, this.rot);
+    // Lower ring on the tiles. The 2.79" hole cups the bottom POLLEN.
+    ringColliders(b, 0, 0, 0, F.lowH, F.lowHoleR, 0.035, 14);
+    // Middle ring (top of the 3.55" retrieval opening) and top ring (4" opening at 21.5")
+    ringColliders(b, 0, 0, F.midY0, F.midY1, 0.051, 0.012, 16);
+    ringColliders(b, 0, 0, F.topY - 0.01, F.topY, F.topR, 0.012, 16);
+    // Backstop on the wall side of the top ring
+    ringColliders(b, 0, 0, F.topY, F.topY + F.backstopH, F.topR + 0.002, 0.006, 8, Math.PI - 1.4, 2.8);
+    // Four HIPS pipes join the upper and middle rings and form a cage that contains the stack
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + k * Math.PI / 2, x = Math.sin(a) * F.pipeCircle, z = Math.cos(a) * F.pipeCircle;
+      capsuleBetween(b, { x, y: F.midY1, z }, { x, y: F.topY - 0.01, z }, F.pipeR);
+    }
+    // Square extrusion from the middle ring to the lower ring (wall side only, so the retrieval opening faces the field)
+    cuboid(b, 0.0127, (F.midY0 - F.lowH) / 2, 0.0127, 0, (F.midY0 + F.lowH) / 2, -F.inset + 0.0127);
+    // Top bracket to the wall
+    cuboid(b, 0.02, 0.01, (F.inset - F.topR) / 2, 0, F.topY - 0.005, -(F.inset + F.topR) / 2);
+  }
+  buildVisual() {
+    const F = FLOWER, g = this.group;
+    const lower = new THREE.LatheGeometry([new THREE.Vector2(F.lowHoleR, 0), new THREE.Vector2(0.07, 0), new THREE.Vector2(0.07, F.lowH), new THREE.Vector2(F.lowHoleR, F.lowH)], 32);
+    mesh(lower, MAT.flower, g);
+    const mid = mesh(new THREE.TorusGeometry(0.057, 0.008, 8, 32), MAT.flower, g, 0, (F.midY0 + F.midY1) / 2, 0); mid.rotation.x = Math.PI / 2;
+    const top = mesh(new THREE.TorusGeometry(F.topR + 0.006, 0.007, 8, 32), MAT.flower, g, 0, F.topY - 0.005, 0); top.rotation.x = Math.PI / 2;
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + k * Math.PI / 2, x = Math.sin(a) * F.pipeCircle, z = Math.cos(a) * F.pipeCircle;
+      cylinderMeshBetween({ x, y: F.midY1, z }, { x, y: F.topY - 0.01, z }, F.pipeR, MAT.white, g);
+    }
+    const bs = mesh(new THREE.CylinderGeometry(F.topR + 0.005, F.topR + 0.005, F.backstopH, 20, 1, true, Math.PI - 1.4, 2.8), MAT.petal, g, 0, F.topY + F.backstopH / 2, 0);
+    mesh(new THREE.BoxGeometry(0.0254, F.midY0 - F.lowH, 0.0254), MAT.darkAlu, g, 0, (F.midY0 + F.lowH) / 2, -F.inset + 0.0127);
+    mesh(new THREE.BoxGeometry(0.04, 0.02, F.inset - F.topR), MAT.darkAlu, g, 0, F.topY - 0.005, -(F.inset + F.topR) / 2);
+    // Decorative petals on the wall
+    for (let k = 0; k < 6; k++) {
+      const p = mesh(new THREE.CircleGeometry(0.045, 16), MAT.petal, g, Math.cos(k * Math.PI / 3) * 0.07, F.topY + 0.06 + Math.sin(k * Math.PI / 3) * 0.07, -F.inset + 0.004, false);
+      p.scale.set(1, 0.55, 1); p.rotation.z = k * Math.PI / 3;
+    }
+    mesh(new THREE.CircleGeometry(0.035, 16), MAT.flower, g, 0, F.topY + 0.06, -F.inset + 0.005, false);
+  }
+  /** World position of the top opening center */
+  topCenter() { return { x: this.pos.x, y: FLOWER.topY, z: this.pos.z }; }
+  /** Is a ball at least partially inside the scoring volume (between the top ring and the middle ring)? */
+  scores(p, r) {
+    const d = hyp(p.x - this.pos.x, p.z - this.pos.z);
+    return d < FLOWER.pipeCircle && p.y + r > FLOWER.midY1 && p.y - r < FLOWER.topY;
+  }
+  inTube(p) { return hyp(p.x - this.pos.x, p.z - this.pos.z) < 0.075 && p.y < FLOWER.topY + 0.1; }
+}
+
+/* =====================================================================================================
+ * 9. HIVE (×2). This is a rotating rigid body with real contact physics.
+ *    Model: the HIVE body pivots on the frame (translation locked, rotation free about x). The CELLS are compound
+ *    colliders, so balls landing in a CELL press on it through contacts and create torque about the pivot.
+ *    Bistability: the real HIVE is an over-center mechanism tuned with ballast washers. Here it is a detent
+ *    torque T0 that holds the HIVE against its damper. T0 stays constant down to ±10° of tilt and then crosses
+ *    through zero, the way an over-center linkage behaves. A one-sided damper at ±30° stands in for the rubber stop.
+ *    T0 is solved from the official calibration: 7 POLLEN resting against the back wall of the up CELL hold, and
+ *    8 tip. Because T0 stays flat, a HIVE loaded just under the threshold sits in a basin about 8-10° deep, so a
+ *    tossed ball doesn't knock it over (the "tossed" rows of Field Guide §12.3). Ball weight and tilt then decide each tip.
+ *    Angle convention: θ = rotation about +x. θ = -30° raises the +z CELL (audience side).
+ * ===================================================================================================== */
+class Hive {
+  constructor(alliance) {
+    this.alliance = alliance;
+    this.x = (alliance === 'red' ? -1 : 1) * HIVE.centerX;
+    this.group = new THREE.Group(); this.group.position.set(this.x, HIVE.pivotY, 0);
+    this.pivotGroup = new THREE.Group(); this.group.add(this.pivotGroup);
+    sim.fieldGroup.add(this.group);
+    this.buildVisual();
+    // Start state (Field Guide §11.1): red has its audience CELL up, blue has its rear CELL up.
+    this.startTheta = alliance === 'red' ? -HIVE.tilt : HIVE.tilt;
+  }
+  /** Local z-sign of the CELL that is currently up */
+  upSign() { return this.theta < 0 ? 1 : -1; }
+  build() {
+    const H = HIVE;
+    this.body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(this.x, H.pivotY, 0)
+      .setRotation(qAxis(1, 0, 0, this.startTheta)).enabledTranslations(false, false, false).enabledRotations(true, false, false)
+      .setAngularDamping(0.05).setCanSleep(false));
+    const opts = { groups: G_HIVE, density: 0, friction: 0.35, restitution: 0.25 };
+    for (const s of [1, -1]) {
+      const zi = s * H.cellInner, zo = s * H.cellOuter, zc = (zi + zo) / 2, hz = Math.abs(zo - zi) / 2;
+      // Floor
+      cuboid(this.body, H.halfW, H.wall / 2, hz, 0, H.floorY - H.wall / 2, zc, null, opts);
+      // Side walls (up to the shoulder)
+      for (const sx of [-1, 1]) cuboid(this.body, H.wall / 2, H.shoulder / 2, hz, sx * (H.halfW + H.wall / 2), H.floorY + H.shoulder / 2, zc, null, opts);
+      // Roof: two slanted panels from the shoulders to the peak
+      const rise = H.peak - H.shoulder, run = H.halfW, len = Math.hypot(rise, run), ang = Math.atan2(rise, run);
+      for (const sx of [-1, 1]) {
+        cuboid(this.body, len / 2, H.wall / 2, hz, sx * run / 2, H.floorY + H.shoulder + rise / 2 + H.wall / 2, zc, qAxis(0, 0, 1, -sx * ang), opts);
+      }
+      // Back wall (pentagon slab) at the inner end of the CELL
+      const pts = [], zb = zi;
+      for (const dz of [-H.wall / 2, H.wall / 2]) {
+        for (const [px, py] of [[-H.halfW, H.floorY], [H.halfW, H.floorY], [H.halfW, H.floorY + H.shoulder], [0, H.floorY + H.peak], [-H.halfW, H.floorY + H.shoulder]]) pts.push(px, py, zb + dz);
+      }
+      const hull = RAPIER.ColliderDesc.convexHull(new Float32Array(pts));
+      world.createCollider(hull.setCollisionGroups(G_HIVE).setDensity(0).setFriction(0.35).setRestitution(0.2), this.body);
+    }
+    // Mass properties: the center of mass is on the pivot (gravity adds no torque on its own); the over-center term is applied manually.
+    this.body.setAdditionalMassProperties(H.mass, { x: 0, y: 0, z: 0 }, { x: H.inertia, y: H.inertia, z: H.inertia }, { x: 0, y: 0, z: 0, w: 1 }, true);
+    this.theta = this.startTheta; this.stableSide = Math.sign(this.startTheta); this.tips = 0; this.tipping = false;
+    this.calibrate();
+  }
+  /** Solve the detent torque so the tip threshold lands between 7 and 8 POLLEN at rest (Field Guide §12.3) */
+  calibrate() {
+    const r = BALL.pollen.r, H = HIVE;
+    const yl = H.floorY + r, zl = H.cellInner + H.wall / 2 + r;          // POLLEN resting against the back wall
+    const zw = Math.abs(yl * Math.sin(-H.tilt) + zl * Math.cos(H.tilt)); // horizontal lever arm at θ = ∓30°
+    this.armPollen = zw;
+    this.T0 = 7.5 * BALL.pollen.m * G * zw;                              // holding torque = 7.5 POLLEN at rest
+  }
+  /** Called before each physics step */
+  applyTorques() {
+    const q = this.body.rotation();
+    this.theta = 2 * Math.atan2(q.x, q.w);
+    const w = this.body.angvel().x;
+    let tau = this.T0 * clamp(Math.sin(this.theta) / Math.sin(10 * Math.PI / 180), -1, 1);   // over-center detent
+    const lim = HIVE.tilt, ex = Math.abs(this.theta) - lim;
+    if (ex > 0) {                                                        // one-sided rubber damper at ±30°
+      const s = Math.sign(this.theta);
+      tau += -s * (120 * ex) - (s * w > 0 ? 4.0 * w : 0.8 * w);
+    }
+    tau -= 0.015 * w;                                                    // pivot friction
+    this.body.resetTorques(false);
+    this.body.addTorque({ x: tau, y: 0, z: 0 }, true);
+  }
+  /** After each step: detect a completed TIP (stable state changes and the opposite damper is reached) */
+  postStep() {
+    const side = Math.sign(this.theta);
+    this.tipping = side !== this.stableSide;
+    if (side !== this.stableSide && Math.abs(this.theta) > HIVE.tilt - 0.035) {
+      this.stableSide = side; this.tips++;
+      match.onTip(this.alliance);
+    }
+  }
+  /** World-space info about the up CELL: target point inside it, opening center, and the outward normal */
+  upCell() {
+    const s = this.upSign(), q = this.body.rotation(), t = this.body.translation(), H = HIVE;
+    const loc = (x, y, z) => { const v = qRot(q, { x, y, z }); return { x: v.x + t.x, y: v.y + t.y, z: v.z + t.z }; };
+    return {
+      sign: s,
+      target: loc(0, H.floorY + 0.12, s * (H.cellOuter - 0.15)),
+      opening: loc(0, H.floorY + H.peak * 0.45, s * H.cellOuter),
+      normal: qRot(q, { x: 0, y: 0, z: s }),
+    };
+  }
+  /** Is the world point p inside the CELL with z-sign s? */
+  inCell(p, s) {
+    const q = this.body.rotation(), t = this.body.translation(), H = HIVE;
+    const l = qRot(qConj(q), { x: p.x - t.x, y: p.y - t.y, z: p.z - t.z });
+    return Math.abs(l.x) < H.halfW && l.y > H.floorY - 0.01 && l.y < H.floorY + H.peak && s * l.z > H.cellInner && s * l.z < H.cellOuter + 0.01;
+  }
+  buildVisual() {
+    const H = HIVE, g = this.pivotGroup, col = allianceMat(this.alliance);
+    const edge = (a, b) => cylinderMeshBetween(a, b, 0.006, col, g, 6);
+    for (const s of [1, -1]) {
+      const zi = s * H.cellInner, zo = s * H.cellOuter, zc = (zi + zo) / 2, L = Math.abs(zo - zi);
+      const P = [[-H.halfW, H.floorY], [H.halfW, H.floorY], [H.halfW, H.floorY + H.shoulder], [0, H.floorY + H.peak], [-H.halfW, H.floorY + H.shoulder]];
+      // Translucent polycarbonate skins
+      const shape = new THREE.Shape(P.map(([x, y]) => new THREE.Vector2(x, y)));
+      mesh(new THREE.ShapeGeometry(shape), MAT.poly, g, 0, 0, zi, false);
+      mesh(new THREE.PlaneGeometry(2 * H.halfW, L).rotateX(-Math.PI / 2), MAT.poly, g, 0, H.floorY, zc, false);
+      for (const sx of [-1, 1]) {
+        mesh(new THREE.PlaneGeometry(L, H.shoulder).rotateY(Math.PI / 2), MAT.poly, g, sx * H.halfW, H.floorY + H.shoulder / 2, zc, false);
+        const rise = H.peak - H.shoulder, len = Math.hypot(rise, H.halfW);
+        const roof = mesh(new THREE.PlaneGeometry(len, L).rotateX(-Math.PI / 2), MAT.poly, g, sx * H.halfW / 2, H.floorY + H.shoulder + rise / 2, zc, false);
+        roof.rotation.z = -sx * Math.atan2(rise, H.halfW);
+      }
+      // Colored frame edges: the opening pentagon, the back pentagon, and the longitudinal rails
+      for (const z of [zi, zo]) for (let i = 0; i < 5; i++) { const a = P[i], b = P[(i + 1) % 5]; edge({ x: a[0], y: a[1], z }, { x: b[0], y: b[1], z }); }
+      for (const [x, y] of P) edge({ x, y, z: zi }, { x, y, z: zo });
+      // AprilTag cluster sticker on the bottom face (4 tags)
+      const tagTex = canvasTexture(256, 256, (c, w, h) => {
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+        for (let k = 0; k < 4; k++) {
+          const ox = (k % 2) * 128 + 14, oy = Math.floor(k / 2) * 128 + 14; c.fillStyle = '#000'; c.fillRect(ox, oy, 100, 100);
+          for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) if (((i * 7 + j * 13 + k * 5) % 3) === 0) { c.fillStyle = '#fff'; c.fillRect(ox + 12.5 + i * 12.5, oy + 12.5 + j * 12.5, 12.5, 12.5); }
+        }
+      });
+      mesh(new THREE.PlaneGeometry(0.2, 0.2).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ map: tagTex }), g, 0, H.floorY - H.wall - 0.002, zc, false);
+      // Damper bumper on each arm
+      mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.03, 12), MAT.black, g, 0, -0.06, s * 0.16);
+    }
+    // Hub and connecting arms
+    mesh(new THREE.BoxGeometry(0.05, 0.03, 2 * H.cellInner), MAT.darkAlu, g, 0, -0.05, 0);
+    const hub = mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.07, 18), MAT.alu, g); hub.rotation.z = Math.PI / 2;
+    mesh(new THREE.BoxGeometry(0.03, 0.08, 0.03), MAT.darkAlu, g, 0, -0.03, 0);
+  }
+  sync() { const q = this.body.rotation(); this.pivotGroup.quaternion.set(q.x, q.y, q.z, q.w); }
+}
+
+/* =====================================================================================================
+ * 10. BALLS (POLLEN / NECTAR). These are dynamic Rapier spheres with CCD, restitution, friction, and a
+ *     rolling-resistance model. Held balls have their bodies disabled while they ride inside a robot.
+ * ===================================================================================================== */
+const ballGeo = { pollen: new THREE.SphereGeometry(BALL.pollen.r, 22, 14), nectar: new THREE.SphereGeometry(BALL.nectar.r, 24, 16) };
+class Ball {
+  constructor(kind, color, pos) {
+    this.kind = kind; this.color = color; this.spec = BALL[kind]; this.r = this.spec.r;
+    this.state = 'field';           // field | held | queue
+    this.owner = null; this.lastLauncher = null; this.launchTime = -99; this.inFlowerIdx = -1; this.id = sim.balls.length;
+    this.mesh = mesh(ballGeo[kind], kind === 'pollen' ? MAT.pollen : allianceMat(color), sim.dynGroup);
+    this.body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(pos.x, pos.y, pos.z)
+      .setCcdEnabled(true).setAngularDamping(0.25));
+    this.collider = world.createCollider(RAPIER.ColliderDesc.ball(this.r).setMass(this.spec.m)
+      .setRestitution(this.spec.restitution).setFriction(this.spec.friction).setCollisionGroups(G_BALL), this.body);
+    if (pos.queue) this.toQueue();
+  }
+  get p() { return this.body.translation(); }
+  toQueue() { this.state = 'queue'; this.body.setEnabled(false); this.mesh.visible = false; }
+  hold(robot) { this.state = 'held'; this.owner = robot; this.body.setEnabled(false); }
+  release(pos, vel) {
+    this.state = 'field'; this.owner = null;
+    this.body.setEnabled(true);
+    this.body.setTranslation(pos, true); this.body.setLinvel(vel, true); this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.mesh.visible = true;
+  }
+  /** Rolling resistance on foam tiles: decay the planar speed of balls touching the floor */
+  physicsTick() {
+    if (this.state !== 'field') return;
+    const p = this.body.translation();
+    if (p.y < this.r + 0.004) {
+      const v = this.body.linvel();
+      if (Math.abs(v.y) < 0.3) {
+        const k = Math.max(0, 1 - 0.55 * DT);
+        this.body.setLinvel({ x: v.x * k, y: v.y, z: v.z * k }, false);
+        const w = this.body.angvel(); this.body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, false);
+      }
+    }
+    // Safety net: anything that escapes the field is reintroduced (POLLEN at the nearest point, NECTAR to the human player)
+    if (Math.abs(p.x) > FH + 0.15 || Math.abs(p.z) > FH + 0.15 || p.y < -0.5) {
+      if (this.kind === 'nectar') { this.toQueue(); match.queue[this.color].push(this); }
+      else this.release({ x: clamp(p.x, -FH + 0.1, FH - 0.1), y: 0.3, z: clamp(p.z, -FH + 0.1, FH - 0.1) }, { x: 0, y: 0, z: 0 });
+    }
+  }
+  sync() {
+    if (this.state === 'field') {
+      const p = this.body.translation(), q = this.body.rotation();
+      this.mesh.position.set(p.x, p.y, p.z); this.mesh.quaternion.set(q.x, q.y, q.z, q.w); this.mesh.visible = true;
+    } else if (this.state === 'queue') this.mesh.visible = false;
+  }
+}
+
+/* =====================================================================================================
+ * 11. ROBOT. One class covers both drivetrains and both intake layouts.
+ *     Physics: a dynamic body that slides on the tiles (y translation and pitch/roll locked; 12 mm ground
+ *     clearance, so it rolls over the 0.4" flower rings and tape). Motors apply traction-limited forces toward
+ *     a commanded velocity, so pushing matches between robots resolve physically.
+ *     Mecanum: holonomic, lower traction in every direction. 4WD: no strafing, but high traction and strong
+ *     lateral grip, so it is better at defense.
+ *     Chassis colliders form a U (or an H for the double intake) with open intake mouths. Balls that roll into a
+ *     mouth while its rollers spin are pulled in and stored, up to 10.
+ * ===================================================================================================== */
+class Robot {
+  constructor({ id, label, alliance, start, cfg, control, strategy }) {
+    Object.assign(this, { id, label, alliance, start, cfg: { ...cfg }, control, strategy });
+    this.held = []; this.cmd = Robot.emptyCmd();
+    this.turretYaw = 0; this.turretPitch = 0.75; this.manualYaw = 0; this.manualPitch = 0.75; this.manualSpeed = 6.0;
+    this.intakeF = 0; this.intakeB = 0; this.flapUp = false; this.flapAnim = 0; this.autoAim = true;
+    this.shootCd = 0; this.ejectCd = 0; this.rollerAng = 0; this.wheelAng = 0; this.flyAng = 0;
+    this.shot = { ok: false, reason: '—' }; this.shotAge = 99; this.aligned = false; this.enabled = true;
+    this.stats = { shots: 0, intaken: 0 };
+    this.group = new THREE.Group(); sim.dynGroup.add(this.group);
+  }
+  static emptyCmd() { return { vx: 0, vz: 0, w: 0, intakeF: false, intakeB: false, reverse: false, shoot: false, flap: false, autoAim: true, yawRate: 0, pitchRate: 0 }; }
+  get pos() { return this.body.translation(); }
+  get heading() { return yawOf(this.body.rotation()); }
+  get vel() { return this.body.linvel(); }
+  get coreFront() { return ROBOT.half - ROBOT.mouthDepth; }
+  get coreBack() { return this.cfg.intake === 'double' ? -ROBOT.half + ROBOT.mouthDepth : -ROBOT.half; }
+  get turretZ() { return this.cfg.intake === 'double' ? 0 : -0.075; }
+
+  build(pose = this.start) {
+    const R = ROBOT;
+    this.body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(pose.x, 0, pose.z).setRotation(qYaw(pose.h))
+      .enabledTranslations(true, false, true).enabledRotations(false, true, false).setCanSleep(false).setCcdEnabled(true));
+    const o = { groups: G_ROBOT, friction: 0.3, restitution: 0.08, density: 0 };
+    const yc = (R.clearance + R.chassisTop) / 2, hy = (R.chassisTop - R.clearance) / 2;
+    for (const sx of [-1, 1]) cuboid(this.body, R.rail / 2, hy, R.half, sx * (R.half - R.rail / 2), yc, 0, null, o);   // side rails
+    const cf = this.coreFront, cb = this.coreBack, cw = R.half - R.rail;
+    const core = cuboid(this.body, cw, hy, (cf - cb) / 2, 0, yc, (cf + cb) / 2, null, { ...o, density: undefined });
+    core.setMass(R.mass);
+    cuboid(this.body, R.half, (R.deckTop - R.chassisTop) / 2, (cf - cb) / 2, 0, (R.chassisTop + R.deckTop) / 2, (cf + cb) / 2, null, o); // upper structure
+    this.I = 0.36;
+    this.buildVisual();
+  }
+  rebuild(cfg) {
+    const p = this.pos, h = this.heading;
+    world.removeRigidBody(this.body);
+    Object.assign(this.cfg, cfg);
+    this.build({ x: p.x, z: p.z, h });
+  }
+
+  /* ---------------- Drive ---------------- */
+  applyDrive() {
+    const D = DRIVE[this.cfg.drive], m = ROBOT.mass, h = this.heading, c = this.enabled ? this.cmd : Robot.emptyCmd();
+    const v = this.body.linvel(), lv = toLocal(v.x, v.z, h), ld = toLocal(c.vx, c.vz, h);
+    if (this.cfg.drive === '4wd') ld.x = 0;                       // skid-steer can't strafe
+    let fx = m * (ld.x - lv.x) / D.tau, fz = m * (ld.z - lv.z) / D.tau;
+    const Flong = D.mu * m * G, Flat = D.muLat * m * G;
+    // Traction (friction-ellipse) limit
+    const e = (fx / Flat) ** 2 + (fz / Flong) ** 2;
+    if (e > 1) { const s = 1 / Math.sqrt(e); fx *= s; fz *= s; }
+    const fw = toWorld(fx, fz, h);
+    this.body.applyImpulse({ x: fw.x * DT, y: 0, z: fw.z * DT }, true);
+    const w = this.body.angvel().y;
+    let tq = this.I * (c.w - w) / 0.07;
+    const tqMax = D.mu * m * G * 0.18;
+    tq = clamp(tq, -tqMax, tqMax);
+    this.body.applyTorqueImpulse({ x: 0, y: tq * DT, z: 0 }, true);
+  }
+  /** Convert a holonomic world-velocity request into what this drivetrain can do (used by AI, auto playback and field-centric drive) */
+  driveTo(vx, vz, wantHeading, wGain = 4.5) {
+    const D = DRIVE[this.cfg.drive], h = this.heading;
+    let w = 0;
+    if (this.cfg.drive === 'mecanum') {
+      if (wantHeading !== null) w = clamp(wrapAngle(wantHeading - h) * wGain, -D.wmax, D.wmax);
+      this.cmd.vx = vx; this.cmd.vz = vz; this.cmd.w = w;
+    } else {
+      // Skid steer: turn toward the travel direction (forwards or backwards, whichever is closer), then drive
+      const sp = hyp(vx, vz);
+      let target = wantHeading;
+      if (sp > 0.12) {
+        const dirH = Math.atan2(vx, vz);
+        const fwdErr = wrapAngle(dirH - h), backErr = wrapAngle(dirH + Math.PI - h);
+        target = Math.abs(fwdErr) <= Math.abs(backErr) + 0.3 ? dirH : dirH + Math.PI;
+      }
+      if (target !== null) w = clamp(wrapAngle(target - h) * wGain, -D.wmax, D.wmax);
+      const fwd = { x: Math.sin(h), z: Math.cos(h) };
+      const along = vx * fwd.x + vz * fwd.z;
+      const err = target !== null ? Math.abs(wrapAngle(target - h)) : 0;
+      const f = along * Math.max(0, Math.cos(Math.min(err * 1.6, Math.PI / 2)));
+      this.cmd.vx = fwd.x * f; this.cmd.vz = fwd.z * f; this.cmd.w = w;
+    }
+  }
+
+  /* ---------------- Mechanisms ---------------- */
+  launchPoint() { const h = this.heading, p = this.pos, o = toWorld(0, this.turretZ, h); return { x: p.x + o.x, y: ROBOT.turretY, z: p.z + o.z }; }
+  flapPoint() { const h = this.heading, p = this.pos, o = toWorld(0, 0.215, h); return { x: p.x + o.x, y: 0.47, z: p.z + o.z }; }
+  nextBallR() { return this.held.length ? this.held[0].r : BALL.pollen.r; }
+
+  /** Sweep a ball along the trajectory and report whether anything solid is in the way (stops once the ball enters the target) */
+  trajClear(p0, vel, T, r, stopFn) {
+    const shape = new RAPIER.Ball(r * 0.97), rot = { x: 0, y: 0, z: 0, w: 1 };
+    const N = 22; let prev = p0;
+    for (let i = 1; i <= N; i++) {
+      const t = T * i / N, p = trajAt(p0, vel, t);
+      if (stopFn(p)) return true;
+      const sv = { x: p.x - prev.x, y: p.y - prev.y, z: p.z - prev.z };
+      const hit = world.castShape(prev, rot, sv, shape, 0, 1, true, undefined, Q_TRAJ, undefined, this.body);
+      if (hit) return false;
+      prev = p;
+    }
+    return true;
+  }
+  /** Solve a shot into this alliance's up CELL. A lock means in range, on the open side, clear, and within shooter limits. */
+  computeShot() {
+    const hive = sim.hives.find((x) => x.alliance === this.alliance);
+    const cell = hive.upCell(), launch = this.launchPoint(), rv = this.vel;
+    const dx = cell.target.x - launch.x, dz = cell.target.z - launch.z;
+    const res = { ok: false, reason: '', yaw: Math.atan2(dx, dz), pitch: 0.8, launch, dist: hyp(dx, dz) };
+    if (hive.tipping) { res.reason = 'HIVE TIPPING'; return res; }
+    const nl = hyp(cell.normal.x, cell.normal.z), nx = cell.normal.x / nl, nz = cell.normal.z / nl;
+    const ox = launch.x - cell.opening.x, oz = launch.z - cell.opening.z;
+    const along = ox * nx + oz * nz, lat = Math.abs(-ox * nz + oz * nx);
+    if (along < 0.3) { res.reason = 'WRONG SIDE'; return res; }
+    if (lat > along * 1.2 + 0.1) { res.reason = 'BAD ANGLE'; return res; }
+    const r = this.nextBallR();
+    const stop = (p) => (p.x - cell.opening.x) * cell.normal.x + (p.y - cell.opening.y) * cell.normal.y + (p.z - cell.opening.z) * cell.normal.z < -0.03;
+    let reason = 'OUT OF RANGE';
+    for (const bd of [30, 26, 34, 22, 38, 42, 18]) {
+      const s = solveArc(launch, cell.target, bd * Math.PI / 180);
+      if (!s) continue;
+      const vr = { x: s.vel.x - rv.x, y: s.vel.y, z: s.vel.z - rv.z };
+      const sp = hyp(vr.x, vr.y, vr.z), pitch = Math.atan2(vr.y, hyp(vr.x, vr.z));
+      res.pitch = pitch;
+      if (sp > SHOOTER.vmax) { reason = 'OUT OF RANGE'; continue; }
+      if (pitch > SHOOTER.pitchMax) { reason = 'TOO CLOSE'; continue; }
+      if (pitch < SHOOTER.pitchMin) { reason = 'TOO FLAT'; continue; }
+      if (!this.trajClear(launch, s.vel, s.T, r, stop)) { reason = 'BLOCKED'; continue; }
+      return Object.assign(res, { ok: true, reason: 'LOCKED', vel: { x: s.vel.x, y: s.vel.y + G * DT / 2, z: s.vel.z }, yaw: Math.atan2(vr.x, vr.z), pitch, speed: sp, T: s.T });
+    }
+    res.reason = reason; return res;
+  }
+  /** The cover flap guides balls up into a FLOWER in front of the robot */
+  computeFlowerShot() {
+    const exit = this.flapPoint(), h = this.heading;
+    let best = null, bd = 1e9;
+    for (const f of sim.flowers) { const d = hyp(f.pos.x - exit.x, f.pos.z - exit.z); if (d < bd) { bd = d; best = f; } }
+    const res = { ok: false, reason: 'NO FLOWER', flower: best };
+    if (!best || bd > 0.8) return res;
+    if (bd < 0.10) { res.reason = 'TOO CLOSE'; return res; }
+    const bearing = wrapAngle(Math.atan2(best.pos.x - exit.x, best.pos.z - exit.z) - h);
+    if (Math.abs(bearing) > 0.75) { res.reason = 'FACE FLOWER'; return res; }
+    const tgt = { x: best.pos.x, y: FLOWER.topY + 0.012, z: best.pos.z };
+    const s = solveArc(exit, tgt, 80 * Math.PI / 180);
+    if (!s) return res;
+    const rv = this.vel, vr = { x: s.vel.x - rv.x, y: s.vel.y, z: s.vel.z - rv.z };
+    if (hyp(vr.x, vr.y, vr.z) > 5) { res.reason = 'OUT OF RANGE'; return res; }
+    const stop = (p) => p.y < FLOWER.topY + 0.03 && hyp(p.x - tgt.x, p.z - tgt.z) < 0.03;
+    if (!this.trajClear(exit, s.vel, s.T, this.nextBallR(), stop)) { res.reason = 'BLOCKED'; return res; }
+    return Object.assign(res, { ok: true, reason: 'FLOWER LOCK', vel: { x: s.vel.x, y: s.vel.y + G * DT / 2, z: s.vel.z }, launch: exit });
+  }
+  fire(vel, launch) {
+    const b = this.held.shift();
+    b.release(launch, vel);
+    b.lastLauncher = this; b.launchTime = sim.time;
+    this.stats.shots++;
+  }
+  mechanisms(dt) {
+    const c = this.enabled ? this.cmd : Robot.emptyCmd(), h = this.heading, p = this.pos;
+    this.intakeF = c.reverse ? -1 : c.intakeF ? 1 : 0;
+    this.intakeB = this.cfg.intake === 'double' ? (c.reverse ? -1 : c.intakeB ? 1 : 0) : 0;
+    this.flapUp = c.flap; this.autoAim = c.autoAim;
+    this.flapAnim = clamp(this.flapAnim + (this.flapUp ? 1 : -1) * dt * 4, 0, 1);
+    this.rollerAng += this.intakeF * 28 * dt; this.rollerBAng = (this.rollerBAng || 0) + this.intakeB * 28 * dt;
+    const v = this.vel; this.wheelAng += (toLocal(v.x, v.z, h).z / 0.048) * dt;
+    this.flyAng += (this.held.length ? 60 : 20) * dt;
+    this.shootCd -= dt; this.ejectCd -= dt; this.shotAge += dt;
+
+    // --- Intakes: pull in, ingest, or eject ---
+    const mouths = [{ s: 1, run: this.intakeF }];
+    if (this.cfg.intake === 'double') mouths.push({ s: -1, run: this.intakeB });
+    for (const mo of mouths) {
+      if (!mo.run) continue;
+      for (const b of sim.balls) {
+        if (b.state !== 'field') continue;
+        const bp = b.p; if (bp.y > 0.15) continue;
+        const l = toLocal(bp.x - p.x, bp.z - p.z, h), lz = l.z * mo.s;
+        if (Math.abs(l.x) > 0.23 || lz < this.coreFront - 0.02 || lz > ROBOT.half + 0.13) continue;
+        if (mo.run > 0) {
+          const inMouth = Math.abs(l.x) < ROBOT.mouthHalfW && lz < ROBOT.half + 0.03 && bp.y < 0.13;
+          if (inMouth && this.held.length < ROBOT.capacity) { b.hold(this); this.held.push(b); this.stats.intaken++; continue; }
+          // Compliant roller flaps grab nearby balls and draw them toward the mouth
+          if (Math.abs(l.x) < 0.21 && this.held.length < ROBOT.capacity) {
+            const pull = toWorld(-l.x * 4, mo.s * -2.2, h), bv = b.body.linvel();
+            b.body.setLinvel({ x: lerp(bv.x, pull.x + v.x, 0.15), y: bv.y, z: lerp(bv.z, pull.z + v.z, 0.15) }, true);
+          }
+        } else {
+          const push = toWorld(0, mo.s * 1.6, h), bv = b.body.linvel();
+          b.body.setLinvel({ x: lerp(bv.x, push.x + v.x, 0.3), y: bv.y, z: lerp(bv.z, push.z + v.z, 0.3) }, true);
+        }
+      }
+      // Reversed rollers spit stored balls back out through this mouth
+      if (mo.run < 0 && this.held.length && this.ejectCd <= 0) {
+        const b = this.held[this.held.length - 1];
+        const o = toWorld(0, mo.s * (ROBOT.half + b.r + 0.02), h), out = toWorld(0, mo.s * 1.4, h);
+        this.held.pop(); b.release({ x: p.x + o.x, y: b.r + 0.01, z: p.z + o.z }, { x: out.x + v.x, y: 0, z: out.z + v.z });
+        b.lastLauncher = this; b.launchTime = sim.time; this.ejectCd = 0.22;
+      }
+    }
+
+    // --- Turret / shooter ---
+    if (this.shotAge > 0.05) {
+      this.shot = this.flapUp ? this.computeFlowerShot() : (this.autoAim ? this.computeShot() : { ok: false, reason: 'MANUAL' });
+      this.shotAge = 0;
+    }
+    this.manualYaw = clamp(this.manualYaw + c.yawRate * 1.6 * dt, -2.9, 2.9);
+    this.manualPitch = clamp(this.manualPitch + c.pitchRate * 0.8 * dt, SHOOTER.pitchMin, SHOOTER.pitchMax);
+    let tYaw = this.manualYaw, tPitch = this.manualPitch;
+    if (this.flapUp) { tYaw = 0; tPitch = 0.9; }
+    else if (this.autoAim) { tYaw = clamp(wrapAngle(this.shot.yaw - h), -2.9, 2.9); tPitch = clamp(this.shot.pitch, SHOOTER.pitchMin, SHOOTER.pitchMax); }
+    const ye = wrapAngle(tYaw - this.turretYaw), pe = tPitch - this.turretPitch;
+    this.turretYaw += clamp(ye, -SHOOTER.yawRate * dt, SHOOTER.yawRate * dt);
+    this.turretPitch += clamp(pe, -SHOOTER.pitchRate * dt, SHOOTER.pitchRate * dt);
+    this.aligned = Math.abs(wrapAngle(tYaw - this.turretYaw)) < 0.026 && Math.abs(tPitch - this.turretPitch) < 0.026;
+
+    if (c.shoot && this.shootCd <= 0 && this.held.length) {
+      if (this.flapUp) {
+        if (this.shot.ok) { this.fire(this.shot.vel, this.shot.launch); this.shootCd = 0.38; this.shotAge = 99; }
+        else {                                                           // nothing to guide into: the flap just lets the ball roll off the front
+          const ex = this.flapPoint(), f = toWorld(0, 0.9, h);
+          this.fire({ x: f.x + v.x, y: 0.4, z: f.z + v.z }, ex); this.shootCd = 0.38;
+        }
+      } else if (this.autoAim && this.shot.ok) {
+        if (this.aligned) { this.fire(this.shot.vel, this.shot.launch); this.shootCd = SHOOTER.interval; this.shotAge = 99; }
+      } else if (!this.autoAim || !this.shot.ok) {
+        // Manual (or unlocked) shot: fire along the turret at the manual speed, with no guarantees
+        const yaw = h + this.turretYaw, sp = this.manualSpeed, pt = this.turretPitch;
+        this.fire({ x: Math.sin(yaw) * Math.cos(pt) * sp + v.x, y: Math.sin(pt) * sp, z: Math.cos(yaw) * Math.cos(pt) * sp + v.z }, this.launchPoint());
+        this.shootCd = SHOOTER.interval * 1.4;
+      }
+    }
+  }
+
+  /* ---------------- Scoring geometry ---------------- */
+  footprint(pad = 0) {
+    const p = this.pos, h = this.heading, hs = ROBOT.half + pad, pts = [];
+    for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, 0], [0, 1], [0, -1], [1, 0], [-1, 0]]) {
+      const o = toWorld(a * hs, b * hs, h); pts.push({ x: p.x + o.x, z: p.z + o.z });
+    }
+    return pts;
+  }
+  inZone(R) { return this.footprint().some((q) => inRect(q, R)); }
+  touchingWall() { return this.footprint(0.012).some((q) => Math.abs(q.x) > FH || Math.abs(q.z) > FH); }
+
+  /* ---------------- Visuals ---------------- */
+  buildVisual() {
+    const g = this.group; while (g.children.length) g.remove(g.children[0]);
+    const R = ROBOT, col = allianceMat(this.alliance), cf = this.coreFront, cb = this.coreBack, mec = this.cfg.drive === 'mecanum';
+    // Side plates (alliance colored), core, deck
+    for (const sx of [-1, 1]) {
+      mesh(new THREE.BoxGeometry(0.006, 0.13, 2 * R.half), col, g, sx * (R.half - 0.003), 0.135, 0);
+      mesh(new THREE.BoxGeometry(R.rail - 0.008, 0.03, 2 * R.half), MAT.alu, g, sx * (R.half - R.rail / 2), 0.075, 0);
+    }
+    mesh(new THREE.BoxGeometry(2 * (R.half - R.rail), R.chassisTop - 0.04, cf - cb), MAT.darkAlu, g, 0, (R.chassisTop + 0.04) / 2, (cf + cb) / 2);
+    mesh(new THREE.BoxGeometry(2 * R.half - 0.01, R.deckTop - R.chassisTop, cf - cb), MAT.black, g, 0, (R.chassisTop + R.deckTop) / 2, (cf + cb) / 2);
+    mesh(new THREE.BoxGeometry(2 * R.half - 0.03, 0.004, cf - cb - 0.02), MAT.alu, g, 0, R.deckTop + 0.002, (cf + cb) / 2);
+    // Wheels
+    this.wheels = [];
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const wg = new THREE.Group(); wg.position.set(sx * (R.half - 0.045), 0.048, sz * (R.half - 0.075)); g.add(wg);
+      const spin = new THREE.Group(); wg.add(spin); this.wheels.push(spin);
+      if (mec) {
+        const hub = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 16), MAT.alu, spin); hub.rotation.z = Math.PI / 2;
+        // 10 rollers at ±45° (X pattern from above)
+        const chir = sx * sz;
+        for (let k = 0; k < 10; k++) {
+          const a = k / 10 * Math.PI * 2;
+          const rl = mesh(new THREE.CapsuleGeometry(0.009, 0.026, 3, 8), MAT.rubber, spin, 0, Math.cos(a) * 0.038, Math.sin(a) * 0.038);
+          rl.rotation.x = a; rl.rotateZ(Math.PI / 2); rl.rotateY(chir * Math.PI / 4);
+        }
+      } else {
+        const tire = mesh(new THREE.CylinderGeometry(0.048, 0.048, 0.035, 22), MAT.rubber, spin); tire.rotation.z = Math.PI / 2;
+        const rim = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.037, 12), MAT.alu, spin); rim.rotation.z = Math.PI / 2;
+        for (let k = 0; k < 5; k++) { const sp = mesh(new THREE.BoxGeometry(0.039, 0.008, 0.05), MAT.darkAlu, spin); sp.rotation.x = k * Math.PI / 5; }
+      }
+    }
+    // Intake rollers with compliant flaps
+    const roller = (zSign) => {
+      const r = new THREE.Group(); r.position.set(0, 0.105, zSign * (R.half - 0.03)); g.add(r);
+      const ax = mesh(new THREE.CylinderGeometry(0.008, 0.008, 2 * R.mouthHalfW + 0.02, 8), MAT.alu, r); ax.rotation.z = Math.PI / 2;
+      for (let i = -2; i <= 2; i++) for (let k = 0; k < 4; k++) {
+        const f = mesh(new THREE.BoxGeometry(0.035, 0.004, 0.045), MAT.rubber, r, i * 0.065, 0, 0);
+        f.rotation.x = k * Math.PI / 2; f.translateZ(0.024);
+      }
+      const r2 = r.clone(); r2.position.set(0, 0.05, zSign * (R.half - 0.08)); g.add(r2);
+      // Intake side guides
+      for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.004, 0.09, R.mouthDepth), MAT.poly, g, sx * R.mouthHalfW, 0.07, zSign * (R.half - R.mouthDepth / 2), false);
+      return [r, r2];
+    };
+    this.rollersF = roller(1);
+    this.rollersB = this.cfg.intake === 'double' ? roller(-1) : null;
+    // Hopper (shows held balls)
+    const hz = (cf + cb) / 2;
+    mesh(new THREE.BoxGeometry(2 * R.half - 0.06, 0.1, cf - cb - 0.03), MAT.poly, g, 0, R.deckTop + 0.05, hz, false);
+    this.slots = [];
+    for (let i = 0; i < 10; i++) this.slots.push(new THREE.Vector3(-0.152 + (i % 5) * 0.076, R.deckTop + 0.05, hz + (i < 5 ? 0.045 : -0.045) * Math.min(1, (cf - cb) / 0.3)));
+    // Turret: yaw ring, then a pitching shooter housing with a flywheel and hood
+    this.turret = new THREE.Group(); this.turret.position.set(0, R.deckTop + 0.1, this.turretZ); g.add(this.turret);
+    mesh(new THREE.CylinderGeometry(0.075, 0.08, 0.025, 24), MAT.alu, this.turret);
+    mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.1, 10), MAT.darkAlu, this.turret, 0, -0.05, 0);
+    this.hood = new THREE.Group(); this.hood.position.y = ROBOT.turretY - (R.deckTop + 0.1); this.turret.add(this.hood);
+    for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.006, 0.09, 0.15), col, this.hood, sx * 0.055, 0, -0.02);
+    this.fly = mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.1, 18), MAT.black, this.hood, 0, -0.03, -0.03); this.fly.rotation.z = Math.PI / 2;
+    const hoodArc = mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.104, 18, 1, true, 0, Math.PI * 0.6), MAT.alu, this.hood, 0, -0.03, -0.03);
+    hoodArc.rotation.z = Math.PI / 2;
+    mesh(new THREE.BoxGeometry(0.1, 0.012, 0.06), MAT.alu, this.hood, 0, 0.04, 0.06);
+    // Cover flap: hinged at the front of the deck. Stowed hanging over the core face; flips up and forward over the intake.
+    this.flap = new THREE.Group(); this.flap.position.set(0, R.deckTop, cf); g.add(this.flap);
+    mesh(new THREE.BoxGeometry(2 * R.mouthHalfW, 0.006, 0.2), new THREE.MeshStandardMaterial({ color: this.alliance === 'red' ? 0xff9a9a : 0x9ac2ff, roughness: 0.4, transparent: true, opacity: 0.85 }), this.flap, 0, 0, 0.1);
+    for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.006, 0.04, 0.2), MAT.alu, this.flap, sx * R.mouthHalfW, 0.02, 0.1);
+    const hinge = mesh(new THREE.CylinderGeometry(0.008, 0.008, 2 * R.mouthHalfW, 8), MAT.alu, this.flap); hinge.rotation.z = Math.PI / 2;
+    // Label
+    this.labelSprite = labelSprite(this.label, this.alliance === 'red' ? '#ff6b6b' : '#6ba6ff'); this.labelSprite.position.set(0, 0.78, 0); g.add(this.labelSprite);
+  }
+  sync() {
+    const p = this.pos, h = this.heading;
+    this.group.position.set(p.x, 0, p.z); this.group.rotation.y = h;
+    for (const w of this.wheels) w.rotation.x = this.wheelAng;
+    for (const r of this.rollersF) r.rotation.x = -this.rollerAng;
+    if (this.rollersB) for (const r of this.rollersB) r.rotation.x = this.rollerBAng;
+    this.turret.rotation.y = this.turretYaw;
+    this.hood.rotation.x = -(this.turretPitch - 0.6) * 0.8;
+    this.fly.rotation.x = this.flyAng;
+    this.flap.rotation.x = lerp(Math.PI / 2, -0.96, this.flapAnim);
+    this.group.updateMatrixWorld();
+    this.held.forEach((b, i) => {
+      const v = this.slots[i].clone(); this.group.localToWorld(v);
+      b.mesh.position.copy(v); b.mesh.visible = true; b.mesh.scale.setScalar(b.kind === 'nectar' ? 0.78 : 1);
+    });
+    for (const b of sim.balls) if (b.state === 'field') b.mesh.scale.setScalar(1);
+  }
+}
+
+/* =====================================================================================================
+ * 12. NAVIGATION GRID + A* (used by the AI). 4" cells. Static obstacles are the walls, flowers and frame legs,
+ *     each inflated by the robot radius. Other robots are avoided reactively.
+ * ===================================================================================================== */
+const NAV = { n: 36, cell: 4 * IN, blocked: new Uint8Array(36 * 36) };
+function segDist(px, pz, ax, az, bx, bz) {
+  const vx = bx - ax, vz = bz - az, t = clamp(((px - ax) * vx + (pz - az) * vz) / (vx * vx + vz * vz || 1), 0, 1);
+  return hyp(px - ax - vx * t, pz - az - vz * t);
+}
+function navBlockedAt(x, z) {
+  if (Math.abs(x) > FH - 0.22 || Math.abs(z) > FH - 0.22) return true;
+  for (const f of FLOWERS_DEF) if (hyp(x - f.x, z - f.z) < 0.31) return true;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) if (segDist(x, z, sx * FRAME.halfW, sz * 0.30, sx * FRAME.halfW, sz * (FRAME.halfD + 0.02)) < 0.29) return true;
+  return false;
+}
+function buildNav() { for (let i = 0; i < NAV.n; i++) for (let j = 0; j < NAV.n; j++) NAV.blocked[i * NAV.n + j] = navBlockedAt(-FH + (i + 0.5) * NAV.cell, -FH + (j + 0.5) * NAV.cell) ? 1 : 0; }
+const cellOf = (x, z) => [clamp(Math.floor((x + FH) / NAV.cell), 0, NAV.n - 1), clamp(Math.floor((z + FH) / NAV.cell), 0, NAV.n - 1)];
+const cellCenter = (i, j) => ({ x: -FH + (i + 0.5) * NAV.cell, z: -FH + (j + 0.5) * NAV.cell });
+const isBlocked = (x, z) => { const [i, j] = cellOf(x, z); return NAV.blocked[i * NAV.n + j] === 1; };
+function lineFree(a, b) {
+  const d = hyp(b.x - a.x, b.z - a.z), n = Math.ceil(d / 0.05);
+  for (let k = 1; k < n; k++) { const t = k / n; if (isBlocked(lerp(a.x, b.x, t), lerp(a.z, b.z, t))) return false; }
+  return true;
+}
+function nearestFree(i, j) {
+  if (!NAV.blocked[i * NAV.n + j]) return [i, j];
+  for (let r = 1; r < 8; r++) for (let di = -r; di <= r; di++) for (let dj = -r; dj <= r; dj++) {
+    const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= NAV.n || b >= NAV.n) continue;
+    if (!NAV.blocked[a * NAV.n + b]) return [a, b];
+  }
+  return [i, j];
+}
+function astar(from, to) {
+  const N = NAV.n, [si, sj] = nearestFree(...cellOf(from.x, from.z)), [gi, gj] = nearestFree(...cellOf(to.x, to.z));
+  const start = si * N + sj, goal = gi * N + gj;
+  const gS = new Float32Array(N * N).fill(Infinity), came = new Int32Array(N * N).fill(-1), closed = new Uint8Array(N * N);
+  const open = [start]; gS[start] = 0;
+  const hfun = (k) => { const dx = Math.abs(Math.floor(k / N) - gi), dz = Math.abs(k % N - gj); return Math.max(dx, dz) + 0.414 * Math.min(dx, dz); };
+  const fS = new Float32Array(N * N).fill(Infinity); fS[start] = hfun(start);
+  let guard = 0;
+  while (open.length && guard++ < 4000) {
+    let bi = 0; for (let k = 1; k < open.length; k++) if (fS[open[k]] < fS[open[bi]]) bi = k;
+    const cur = open[bi]; open.splice(bi, 1);
+    if (cur === goal) break;
+    closed[cur] = 1;
+    const ci = Math.floor(cur / N), cj = cur % N;
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      if (!di && !dj) continue;
+      const ni = ci + di, nj = cj + dj; if (ni < 0 || nj < 0 || ni >= N || nj >= N) continue;
+      const nk = ni * N + nj; if (NAV.blocked[nk] || closed[nk]) continue;
+      if (di && dj && (NAV.blocked[ci * N + nj] || NAV.blocked[ni * N + cj])) continue;
+      const ng = gS[cur] + (di && dj ? 1.414 : 1);
+      if (ng < gS[nk]) { gS[nk] = ng; fS[nk] = ng + hfun(nk); came[nk] = cur; if (!open.includes(nk)) open.push(nk); }
+    }
+  }
+  if (came[goal] === -1 && goal !== start) return [to];
+  const pts = []; let k = goal;
+  while (k !== -1 && k !== start) { pts.push(cellCenter(Math.floor(k / N), k % N)); k = came[k]; }
+  pts.reverse(); pts.push(to);
+  // String-pull smoothing
+  const out = []; let anchor = from, i = 0;
+  while (i < pts.length) {
+    let j = pts.length - 1;
+    while (j > i && !lineFree(anchor, pts[j])) j--;
+    out.push(pts[j]); anchor = pts[j]; i = j + 1;
+  }
+  return out;
+}
+
+/* =====================================================================================================
+ * 13. SMART AI. State machine per robot: collect → shoot (auto-aimed) → flower (endgame NECTAR) → park,
+ *     with defense / mixed strategies. Robot control uses the same command interface as a human driver.
+ * ===================================================================================================== */
+class AI {
+  constructor(robot) {
+    this.r = robot; this.state = 'collect'; this.stateT = 0; this.target = null; this.targetT = 0; this.path = []; this.repath = 0;
+    this.goal = null; this.black = new Map(); this.stuckT = 0; this.backT = 0; this.backDir = 1; this.spot = null; this.spotT = 0;
+    this.noLockT = 0; this.contactT = 0; this.retreatT = 0; this.mode = robot.strategy === 'defense' ? 'defense' : 'offense'; this.modeT = 0; this.victim = null;
+  }
+  get opponents() { return sim.robots.filter((o) => o.alliance !== this.r.alliance && o.active); }
+  setState(s) { if (this.state !== s) { this.state = s; this.stateT = 0; this.path = []; this.goal = null; } }
+  /** Follow a path to `goal` and return the remaining distance */
+  navigate(goal, heading, vmaxScale = 1, arrive = 0.1) {
+    const r = this.r, p = r.pos, D = DRIVE[r.cfg.drive];
+    this.repath -= DT;
+    if (!this.goal || hyp(goal.x - this.goal.x, goal.z - this.goal.z) > 0.15 || this.repath <= 0) {
+      this.goal = { x: goal.x, z: goal.z }; this.repath = 0.6;
+      this.path = lineFree(p, goal) ? [goal] : astar(p, goal);
+    }
+    while (this.path.length > 1 && hyp(this.path[0].x - p.x, this.path[0].z - p.z) < 0.18) this.path.shift();
+    const wp = this.path[0] || goal, dist = hyp(goal.x - p.x, goal.z - p.z);
+    let dx = wp.x - p.x, dz = wp.z - p.z; const dl = hyp(dx, dz) || 1; dx /= dl; dz /= dl;
+    let sp = dist < arrive ? 0 : Math.min(D.vmax * vmaxScale, Math.sqrt(2 * 2.2 * Math.max(0, dist - arrive * 0.5)) + 0.08);
+    let vx = dx * sp, vz = dz * sp;
+    // Reactive avoidance of other robots (skipped for a defender's own victim)
+    for (const o of sim.robots) {
+      if (o === r || !o.active || o === this.victim) continue;
+      const q = o.pos, ox = p.x - q.x, oz = p.z - q.z, d = hyp(ox, oz);
+      if (d < 0.75 && d > 0.01) { const k = (0.75 - d) * 2.2; vx += ox / d * k; vz += oz / d * k; }
+    }
+    // Stuck recovery: back off along the opposite direction for a moment
+    const v = r.vel, speed = hyp(v.x, v.z);
+    if (sp > 0.3 && speed < 0.06) this.stuckT += DT; else this.stuckT = Math.max(0, this.stuckT - DT * 2);
+    if (this.stuckT > 0.8) { this.stuckT = 0; this.backT = 0.55; this.backDir = sim.rng() < 0.5 ? 1 : -1; }
+    if (this.backT > 0) {
+      this.backT -= DT; const h = r.heading, b = toWorld(this.backDir * 0.5, -0.8, h);
+      r.driveTo(b.x, b.z, h + this.backDir * 0.6); return dist;
+    }
+    r.driveTo(vx, vz, heading);
+    return dist;
+  }
+  ownGarden() { return ZONES.garden[this.r.alliance]; }
+  pickBall(preferNectar) {
+    const r = this.r, p = r.pos, h = r.heading; let best = null, bc = 1e9;
+    for (const b of sim.balls) {
+      if (b.state !== 'field') continue;
+      const bp = b.p; if (bp.y > 0.11) continue;
+      if (b.kind === 'nectar' && b.color !== r.alliance) continue;
+      if ((this.black.get(b) || 0) > sim.time) continue;
+      if (inRect(bp, this.ownGarden(), 0.03)) continue;
+      if (Math.abs(bp.x) > FH - 0.045 && Math.abs(bp.z) > FH - 0.2) continue;   // wedged in a corner: unreachable for a square robot
+      let c = hyp(bp.x - p.x, bp.z - p.z);
+      c += Math.abs(wrapAngle(Math.atan2(bp.x - p.x, bp.z - p.z) - h)) * 0.12;
+      if (preferNectar && b.kind === 'nectar') c -= 1.6;
+      for (const o of sim.robots) if (o !== r && o.active && hyp(o.pos.x - bp.x, o.pos.z - bp.z) < 0.35) c += 1.2;
+      if (c < bc) { bc = c; best = b; }
+    }
+    return best;
+  }
+  findSpot() {
+    const r = this.r, hive = sim.hives.find((x) => x.alliance === r.alliance), cell = hive.upCell(), p = r.pos;
+    const nl = hyp(cell.normal.x, cell.normal.z), nx = cell.normal.x / nl, nz = cell.normal.z / nl, px = -nz, pz = nx;
+    const cands = [];
+    for (let d = 0.7; d <= 2.6; d += 0.2) for (let l = -1.0; l <= 1.0; l += 0.25) {
+      const q = { x: cell.opening.x + nx * d + px * l, z: cell.opening.z + nz * d + pz * l };
+      if (Math.abs(q.x) > FH - 0.3 || Math.abs(q.z) > FH - 0.3 || isBlocked(q.x, q.z)) continue;
+      const s = solveArc({ x: q.x, y: ROBOT.turretY, z: q.z }, cell.target, Math.PI / 6);
+      if (!s || s.speed > SHOOTER.vmax * 0.92 || s.pitch > SHOOTER.pitchMax - 0.05 || s.pitch < SHOOTER.pitchMin) continue;
+      let c = hyp(q.x - p.x, q.z - p.z) + Math.abs(l) * 0.3;
+      for (const o of sim.robots) if (o !== r && o.active && hyp(o.pos.x - q.x, o.pos.z - q.z) < 0.6) c += 1.5;
+      cands.push({ q, c, s });
+    }
+    cands.sort((a, b) => a.c - b.c);
+    const stop = (pt) => (pt.x - cell.opening.x) * cell.normal.x + (pt.y - cell.opening.y) * cell.normal.y + (pt.z - cell.opening.z) * cell.normal.z < -0.03;
+    for (const cd of cands.slice(0, 6)) {
+      if (r.trajClear({ x: cd.q.x, y: ROBOT.turretY, z: cd.q.z }, cd.s.vel, cd.s.T, BALL.nectar.r, stop)) return cd.q;
+    }
+    return cands[0]?.q || { x: cell.opening.x + nx * 1.2, z: cell.opening.z + nz * 1.2 };
+  }
+  pickFlower() {
+    const r = this.r, p = r.pos; let best = null, bc = 1e9;
+    for (const f of sim.flowers) {
+      const st = scoring.flowerState(f);
+      if (st.topY > FLOWER.topY - 0.11) continue;                         // full
+      let c = hyp(f.pos.x - p.x, f.pos.z - p.z);
+      if (st.owner === r.alliance) c += 2.5; else if (st.owner) c -= 0.8;
+      if (c < bc) { bc = c; best = f; }
+    }
+    return best;
+  }
+  update() {
+    const r = this.r, dt = DT; this.stateT += dt; this.modeT -= dt;
+    const c = r.cmd; c.autoAim = true; c.reverse = false; c.yawRate = 0; c.pitchRate = 0;
+    const tl = match.timeLeft(), phase = match.phase, endgame = phase === 'teleop' && tl <= 60;
+    const own = (b) => b.kind === 'nectar' && b.color === r.alliance;
+
+    // Strategy selection (mixed re-evaluates every second)
+    if (r.strategy === 'mixed' && this.modeT <= 0) {
+      this.modeT = 1;
+      const threat = this.opponents.find((o) => o.held.length >= 5 && hyp(o.pos.x - r.pos.x, o.pos.z - r.pos.z) < 2.6);
+      this.mode = r.held.length < 3 && threat && !(phase === 'teleop' && tl < 35) ? 'defense' : 'offense';
+    } else if (r.strategy === 'offense') this.mode = 'offense';
+    else if (r.strategy === 'defense') this.mode = phase === 'auto' ? 'offense' : 'defense';
+
+    // Parking has priority near the end of AUTO and TELEOP
+    const lz = ZONES.loading[r.alliance], lzc = { x: (lz.x0 + lz.x1) / 2 + (r.alliance === 'red' ? 0.16 : -0.16), z: (lz.z0 + lz.z1) / 2 };
+    const travel = hyp(lzc.x - r.pos.x, lzc.z - r.pos.z) / (DRIVE[r.cfg.drive].vmax * 0.6) + 1.5;
+    if ((phase === 'auto' && tl < travel + 1) || (phase === 'teleop' && tl < travel + 1.5)) this.setState('park');
+    else if (this.state === 'park') this.setState('collect');
+
+    if (this.state !== 'park') {
+      if (this.mode === 'defense' && this.state !== 'flower') { if (this.state !== 'defend') this.setState('defend'); }
+      else if (this.state === 'defend') this.setState(r.held.length ? 'shoot' : 'collect');
+    }
+    c.intakeF = true; c.intakeB = true; c.flap = false; c.shoot = false;
+
+    switch (this.state) {
+      case 'collect': {
+        if (r.held.length >= ROBOT.capacity || (r.held.length >= 6 && !endgame) || (r.held.length && this.stateT > 12)) { this.setState('shoot'); break; }
+        if (endgame && r.held.length && own(r.held[0])) { this.setState('flower'); break; }
+        if (!this.target || this.target.state !== 'field' || this.targetT > 4.5 || this.target.p.y > 0.11) {
+          if (this.target && this.target.state === 'field') this.black.set(this.target, sim.time + 6);
+          this.target = this.pickBall(endgame); this.targetT = 0;
+        }
+        this.targetT += dt;
+        if (!this.target) { if (r.held.length) this.setState('shoot'); else this.navigate({ x: r.alliance === 'red' ? -0.9 : 0.9, z: 0 }, null, 0.6); break; }
+        const bp = this.target.p, p = r.pos;
+        let hd = Math.atan2(bp.x - p.x, bp.z - p.z);
+        if (r.cfg.intake === 'double' && Math.abs(wrapAngle(hd + Math.PI - r.heading)) < Math.abs(wrapAngle(hd - r.heading))) hd += Math.PI;
+        const d = hyp(bp.x - p.x, bp.z - p.z);
+        // Approach slowly once close so the rollers can grab the ball; aim the robot center through the ball
+        this.navigate({ x: bp.x, z: bp.z }, hd, d < 0.6 ? 0.45 : 1, 0.0);
+        break;
+      }
+      case 'shoot': {
+        if (!r.held.length) { this.setState('collect'); break; }
+        if (endgame && own(r.held[0])) { this.setState('flower'); break; }
+        this.spotT -= dt;
+        if (!this.spot || this.spotT <= 0 || this.hiveTipsSeen !== match.tipCount(r.alliance)) { this.spot = this.findSpot(); this.spotT = 3; this.hiveTipsSeen = match.tipCount(r.alliance); }
+        const cellT = sim.hives.find((x) => x.alliance === r.alliance).upCell().target;
+        const face = Math.atan2(cellT.x - r.pos.x, cellT.z - r.pos.z);
+        const dist = this.navigate(this.spot, face, 1, 0.08);
+        c.shoot = r.shot.ok;
+        if (dist < 0.15 && !r.shot.ok) { this.noLockT += dt; if (this.noLockT > 1.2) { this.spotT = 0; this.noLockT = 0; } } else this.noLockT = 0;
+        break;
+      }
+      case 'flower': {
+        if (!r.held.length || !own(r.held[0])) { this.setState(r.held.length ? 'shoot' : 'collect'); break; }
+        if (!this.flower || this.stateT > 9 || scoring.flowerState(this.flower).topY > FLOWER.topY - 0.11) { this.flower = this.pickFlower(); if (this.stateT > 9) this.stateT = 0; }
+        if (!this.flower) { this.setState('shoot'); break; }
+        const f = this.flower, ap = { x: f.pos.x + f.normal.x * 0.42, z: f.pos.z + f.normal.z * 0.42 };
+        const face = Math.atan2(-f.normal.x, -f.normal.z);
+        const dist = this.navigate(ap, face, 0.9, 0.04);
+        c.flap = dist < 0.6; c.intakeF = false;
+        c.shoot = dist < 0.12 && r.shot.ok && Math.abs(wrapAngle(face - r.heading)) < 0.25;
+        break;
+      }
+      case 'park': {
+        c.shoot = r.held.length > 0 && r.shot.ok && phase === 'teleop';
+        this.navigate(lzc, r.alliance === 'red' ? -Math.PI / 2 : Math.PI / 2, 1, 0.05);
+        break;
+      }
+      case 'defend': {
+        const opps = this.opponents; if (!opps.length) { this.mode = 'offense'; this.setState('collect'); break; }
+        if (!this.victim || this.modeT < -4 || !this.victim.active) { this.victim = opps.reduce((a, b) => (b.held.length > a.held.length ? b : a)); this.modeT = 0; }
+        const v = this.victim, vp = v.pos, p = r.pos;
+        const vh = sim.hives.find((x) => x.alliance === v.alliance).upCell();
+        let dx = vh.opening.x - vp.x, dz = vh.opening.z - vp.z; const dl = hyp(dx, dz) || 1; dx /= dl; dz /= dl;
+        const d = hyp(vp.x - p.x, vp.z - p.z);
+        if (d < 0.56) this.contactT += dt; else this.contactT = Math.max(0, this.contactT - dt);
+        if (this.contactT > 3) { this.retreatT = 1.4; this.contactT = 0; }                 // no pinning longer than ~3 s
+        if (this.retreatT > 0) {
+          this.retreatT -= dt; const ax = p.x - vp.x, az = p.z - vp.z, al = hyp(ax, az) || 1;
+          r.driveTo(ax / al * 1.0, az / al * 1.0, Math.atan2(vp.x - p.x, vp.z - p.z)); break;
+        }
+        const block = { x: clamp(vp.x + dx * 0.6, -FH + 0.3, FH - 0.3), z: clamp(vp.z + dz * 0.6, -FH + 0.3, FH - 0.3) };
+        const goal = d < 0.9 ? { x: vp.x, z: vp.z } : block;
+        this.navigate(goal, Math.atan2(vp.x - p.x, vp.z - p.z), 1, 0.0);
+        c.shoot = r.held.length > 0 && r.shot.ok;
+        break;
+      }
+    }
+  }
+}
+
+/* =====================================================================================================
+ * 14. INPUT: keyboard plus the browser Gamepad API. Works with the official FTC controllers (Logitech F310 in
+ *     X-input mode, Etpark / PS4-style) and anything else Chrome exposes with the "standard" mapping.
+ * ===================================================================================================== */
+const keys = new Set(), keyEdges = new Set();
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (!keys.has(e.code)) keyEdges.add(e.code);
+  keys.add(e.code);
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+const padPrev = [{}, {}];
+function readPad(idx) {
+  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  const gp = pads[idx]; if (!gp) return null;
+  const dz = (v) => (Math.abs(v) < 0.08 ? 0 : (v - Math.sign(v) * 0.08) / 0.92);
+  const btn = (i) => (gp.buttons[i] ? (gp.buttons[i].value > 0.5 || gp.buttons[i].pressed) : false);
+  const s = {
+    id: gp.id, lx: dz(gp.axes[0] || 0), ly: dz(gp.axes[1] || 0), rx: dz(gp.axes[2] || 0), ry: dz(gp.axes[3] || 0),
+    a: btn(0), b: btn(1), x: btn(2), y: btn(3), lb: btn(4), rb: btn(5), lt: btn(6), rt: btn(7), back: btn(8), start: btn(9),
+    up: btn(12), down: btn(13), left: btn(14), right: btn(15),
+  };
+  const prev = padPrev[idx]; s.edge = (k) => s[k] && !prev[k];
+  padPrev[idx] = { ...s }; return s;
+}
+/** Driver toggles live on the robot so they persist across frames */
+function humanCommand(robot, kb, pad, frameEdges) {
+  const tog = robot.tog || (robot.tog = { intakeF: false, intakeB: false, flap: settings.flap === 'up', aim: settings.aim === 'auto' });
+  let fwd = 0, str = 0, turn = 0, shoot = false, rev = false, slow = false, yawRate = 0, pitchRate = 0;
+  const mec = robot.cfg.drive === 'mecanum';
+  if (kb) {
+    if (keys.has('KeyW')) fwd += 1; if (keys.has('KeyS')) fwd -= 1;
+    if (mec) { if (keys.has('KeyD')) str += 1; if (keys.has('KeyA')) str -= 1; }
+    else { if (keys.has('KeyD')) turn += 1; if (keys.has('KeyA')) turn -= 1; }
+    if (keys.has('KeyE') || keys.has('ArrowRight')) turn += 1; if (keys.has('KeyQ') || keys.has('ArrowLeft')) turn -= 1;
+    shoot ||= keys.has('Space'); rev ||= keys.has('KeyR'); slow ||= keys.has('ShiftLeft') || keys.has('ShiftRight');
+    if (keys.has('KeyZ')) yawRate += 1; if (keys.has('KeyX')) yawRate -= 1;
+    if (keys.has('ArrowUp')) pitchRate += 1; if (keys.has('ArrowDown')) pitchRate -= 1;
+    if (frameEdges.has('KeyF')) tog.intakeF = !tog.intakeF;
+    if (frameEdges.has('KeyB')) tog.intakeB = !tog.intakeB;
+    if (frameEdges.has('KeyG')) tog.flap = !tog.flap;
+    if (frameEdges.has('KeyT')) tog.aim = !tog.aim;
+  }
+  if (pad) {
+    fwd += -pad.ly; str += pad.lx; turn += pad.rx;
+    shoot ||= pad.rt; rev ||= pad.lt; slow ||= pad.lb;
+    if (pad.left) yawRate += 1; if (pad.right) yawRate -= 1; if (pad.up) pitchRate += 1; if (pad.down) pitchRate -= 1;
+    if (pad.edge('a')) tog.intakeF = !tog.intakeF;
+    if (pad.edge('b')) tog.intakeB = !tog.intakeB;
+    if (pad.edge('y')) tog.flap = !tog.flap;
+    if (pad.edge('x')) tog.aim = !tog.aim;
+  }
+  fwd = clamp(fwd, -1, 1); str = clamp(str, -1, 1); turn = clamp(turn, -1, 1);
+  const D = DRIVE[robot.cfg.drive], k = slow ? 0.35 : 1, h = robot.heading;
+  const c = robot.cmd;
+  Object.assign(c, { intakeF: tog.intakeF, intakeB: tog.intakeB, reverse: rev, shoot, flap: tog.flap, autoAim: tog.aim, yawRate, pitchRate });
+  if (settings.frame === 'field' && robot === sim.player) {
+    // Field-centric from the red driver station: stick up = toward the blue wall (+x), stick right = toward the audience (+z)
+    const vx = fwd * D.vmax * k, vz = str * D.vmax * k;
+    if (mec) { c.vx = vx; c.vz = vz; c.w = -turn * D.wmax * k; }
+    else if (Math.abs(turn) > 0.05) { c.vx = 0; c.vz = 0; c.w = -turn * D.wmax * k; robot.driveTo(vx, vz, null); c.w = -turn * D.wmax * k; }
+    else robot.driveTo(vx, vz, null);
+  } else {
+    const w = toWorld(-str * D.vmax * D.strafe * k, fwd * D.vmax * k, h);
+    c.vx = w.x; c.vz = w.z; c.w = -turn * D.wmax * k;
+  }
+}
+
+/* =====================================================================================================
+ * 15. AUTONOMOUS RECORDER. While recording, the player's pose, velocities and mechanism states are logged at
+ *     60 Hz. During a match's AUTO period the log is replayed: the recorded drive commands feed forward, and
+ *     pose feedback pulls the robot back onto the recorded path after a bump. With no recording, AUTO is skipped for the player.
+ * ===================================================================================================== */
+const AutoRec = {
+  KEY: 'biobuzz_auto_v1', data: null, recording: false, frames: [], ptr: 0,
+  load() { try { this.data = JSON.parse(localStorage.getItem(this.KEY) || 'null'); } catch (e) { this.data = null; } },
+  save() { try { localStorage.setItem(this.KEY, JSON.stringify(this.data)); } catch (e) { /* storage full or blocked: keep in memory */ } },
+  clear() { this.data = null; try { localStorage.removeItem(this.KEY); } catch (e) { /* ignore */ } },
+  start() { this.recording = true; this.frames = []; },
+  sample(r, t) {
+    const p = r.pos, c = r.cmd;
+    const flags = (c.intakeF ? 1 : 0) | (c.intakeB ? 2 : 0) | (c.reverse ? 4 : 0) | (c.shoot ? 8 : 0) | (c.flap ? 16 : 0) | (c.autoAim ? 32 : 0);
+    const f4 = (x) => Math.round(x * 1e4) / 1e4;
+    this.frames.push([f4(t), f4(p.x), f4(p.z), f4(r.heading), f4(c.vx), f4(c.vz), f4(c.w), flags]);
+  },
+  stop(r) {
+    this.recording = false;
+    if (this.frames.length < 10) return false;
+    this.data = { v: 1, drive: r.cfg.drive, intake: r.cfg.intake, created: new Date().toISOString(), frames: this.frames };
+    this.save(); return true;
+  },
+  /** Drive robot r along the recording at auto time t. Returns false when there is nothing to play. */
+  play(r, t) {
+    const F = this.data?.frames; if (!F || !F.length) return false;
+    if (t < F[0][0]) return true;
+    while (this.ptr < F.length - 2 && F[this.ptr + 1][0] <= t) this.ptr++;
+    const a = F[this.ptr], b = F[Math.min(this.ptr + 1, F.length - 1)], u = b[0] > a[0] ? clamp((t - a[0]) / (b[0] - a[0]), 0, 1) : 0;
+    const done = t > F[F.length - 1][0];
+    const x = lerp(a[1], b[1], u), z = lerp(a[2], b[2], u), h = a[3] + wrapAngle(b[3] - a[3]) * u;
+    const p = r.pos, c = r.cmd;
+    c.vx = (done ? 0 : a[4]) + (x - p.x) * 2.5; c.vz = (done ? 0 : a[5]) + (z - p.z) * 2.5;
+    c.w = (done ? 0 : a[6]) + wrapAngle(h - r.heading) * 3;
+    const fl = a[7];
+    Object.assign(c, { intakeF: !!(fl & 1), intakeB: !!(fl & 2), reverse: !!(fl & 4), shoot: !!(fl & 8) && !done, flap: !!(fl & 16), autoAim: !!(fl & 32), yawRate: 0, pitchRate: 0 });
+    return true;
+  },
+};
+AutoRec.load();
+
+/* =====================================================================================================
+ * 16. SCORING (Section 10.5): live evaluation of CELLS, FLOWERS, GARDENS and PARK
+ * ===================================================================================================== */
+const scoring = {
+  /** Balls in a FLOWER's scoring volume, sorted bottom→top, plus ownership */
+  flowerState(f) {
+    const inside = sim.balls.filter((b) => b.state === 'field' && f.scores(b.p, b.r)).sort((a, b) => a.p.y - b.p.y);
+    const nect = inside.filter((b) => b.kind === 'nectar');
+    const owner = nect.length ? nect[nect.length - 1].color : null;
+    const bottom = nect.length ? nect[0].color : null;
+    const topY = inside.length ? inside[inside.length - 1].p.y : 0;
+    return { inside, owner, bottom, topY };
+  },
+  endState() {
+    const out = { red: { cell: 0, flower: 0, bottom: 0, garden: 0, park: 0 }, blue: { cell: 0, flower: 0, bottom: 0, garden: 0, park: 0 } };
+    for (const h of sim.hives) { const s = h.upSign(); out[h.alliance].cell = sim.balls.filter((b) => b.state === 'field' && h.inCell(b.p, s)).length * 2; }
+    for (const f of sim.flowers) {
+      const st = this.flowerState(f);
+      if (st.owner) out[st.owner].flower += st.inside.length * 2;
+      if (st.bottom) out[st.bottom].bottom += 5;
+    }
+    for (const a of ['red', 'blue']) {
+      const Gz = ZONES.garden[a];
+      out[a].garden = sim.balls.filter((b) => b.state === 'field' && b.p.y < 0.2 && b.p.x > Gz.x0 - b.r && b.p.x < Gz.x1 + b.r && b.p.z > Gz.z0 - b.r && b.p.z < Gz.z1 + b.r).length;
+      out[a].park = sim.robots.filter((r) => r.active && r.alliance === a && r.inZone(ZONES.loading[a])).length * 5;
+    }
+    return out;
+  },
+};
+
+/* =====================================================================================================
+ * 17. MATCH MANAGER: AUTO (0:30), transition (0:08), TELEOP (2:00), human-player NECTAR, fouls, results
+ * ===================================================================================================== */
+const ui = {};
+const match = {
+  mode: 'free', phase: 'free', t: 0, countdown: 0,
+  queue: { red: [], blue: [] }, unlocked: { red: 0, blue: 0 }, feedCd: 0,
+  tips: { red: { auto: 0, tele: 0 }, blue: { auto: 0, tele: 0 } },
+  sc: null, final: null,
+  newScore() { const z = () => ({ leave: 0, autoPark: 0, fouls: 0 }); this.sc = { red: z(), blue: z() }; },
+  tipCount(a) { return this.tips[a].auto + this.tips[a].tele; },
+  timeLeft() {
+    if (this.phase === 'auto') return AUTO_LEN - this.t;
+    if (this.phase === 'transition') return TELEOP_LEN;
+    if (this.phase === 'teleop') return TELEOP_LEN - this.t;
+    if (this.phase === 'countdown' || this.phase === 'pre') return AUTO_LEN;
+    return 0;
+  },
+  displayClock() {
+    if (this.phase === 'auto') return fmtTime(AUTO_LEN - this.t);
+    if (this.phase === 'transition') return fmtTime(TRANSITION_LEN - this.t);
+    if (this.phase === 'teleop') return fmtTime(TELEOP_LEN - this.t);
+    if (this.phase === 'countdown') return fmtTime(AUTO_LEN);
+    if (this.phase === 'free') return '∞';
+    return '0:00';
+  },
+  flowersUnlocked() { return this.phase === 'free' || (this.phase === 'teleop' && this.timeLeft() <= 60) || this.phase === 'post'; },
+  onTip(a) {
+    if (this.phase === 'auto') this.tips[a].auto++;
+    else if (this.phase === 'teleop' || this.phase === 'free' || this.phase === 'transition' || this.phase === 'post') this.tips[a].tele++;
+    else return;
+    this.unlocked[a]++;
+    toast(`${a.toUpperCase()} HIVE TIPPED! +20 · a NECTAR is unlocked`, a);
+  },
+  begin(mode) {
+    resetField();
+    this.mode = mode; this.newScore(); this.final = null;
+    this.phase = 'countdown'; this.t = 0; this.countdown = 3;
+    ui.results.style.display = 'none';
+    if (mode === 'record') { toast('Recording AUTO: drive your routine for 30 s', 'yellow'); }
+    else if (!AutoRec.data) toast('No AUTO routine recorded. Your robot will skip AUTO.', 'yellow');
+  },
+  startFree() { resetField(); this.mode = 'free'; this.phase = 'free'; this.t = 0; this.newScore(); ui.results.style.display = 'none'; banner('FREE PRACTICE', 1.2); },
+  setPhase(p) {
+    this.phase = p; this.t = 0;
+    if (p === 'auto') { AutoRec.ptr = 0; banner('AUTO', 1.0); if (this.mode === 'record') AutoRec.start(); }
+    if (p === 'transition') banner('DRIVERS, PICK UP CONTROLLERS', 2.2);
+    if (p === 'teleop') banner('TELEOP', 1.0);
+  },
+  update(dt) {
+    this.t += dt;
+    if (this.phase === 'countdown') {
+      const prev = Math.ceil(this.countdown); this.countdown -= dt;
+      if (Math.ceil(this.countdown) !== prev && this.countdown > 0) banner(String(Math.ceil(this.countdown)), 0.7);
+      if (this.countdown <= 0) this.setPhase('auto');
+    } else if (this.phase === 'auto' && this.t >= AUTO_LEN) {
+      this.assessAuto();
+      if (this.mode === 'record') {
+        const ok = AutoRec.stop(sim.player); this.phase = 'post'; this.t = 0; this.mode = 'idle';
+        toast(ok ? `AUTO routine saved (${AutoRec.data.frames.length} samples)` : 'Recording too short, nothing saved', 'yellow'); refreshAutoStatus();
+      } else this.setPhase('transition');
+    } else if (this.phase === 'transition' && this.t >= TRANSITION_LEN) this.setPhase('teleop');
+    else if (this.phase === 'teleop' && this.t >= TELEOP_LEN) { this.phase = 'post'; this.t = 0; banner('MATCH END', 1.5); }
+    else if (this.phase === 'post' && this.mode === 'match' && !this.final && this.t > 2.5) this.finish();
+    // Robots are only enabled during AUTO, TELEOP and free practice
+    const en = this.phase === 'auto' || this.phase === 'teleop' || this.phase === 'free';
+    for (const r of sim.robots) r.enabled = en;
+    if (this.phase === 'teleop' && this.t - dt < 60 && this.t >= 60) toast('1:00: FLOWERS unlocked, and all remaining NECTAR may enter', 'yellow');
+    this.feed(dt);
+  },
+  /** Human player: enter one NECTAR into the LOADING ZONE per TIP; with 60 s left, all of the remaining NECTAR */
+  feed(dt) {
+    this.feedCd -= dt; if (this.feedCd > 0) return; this.feedCd = 1.6;
+    if (!(this.phase === 'teleop' || this.phase === 'free' || this.phase === 'auto')) return;
+    for (const a of ['red', 'blue']) {
+      const q = this.queue[a]; if (!q.length) continue;
+      const allow = (this.phase === 'teleop' && this.timeLeft() <= 60) || this.unlocked[a] > 0;
+      if (!allow) continue;
+      const L = ZONES.loading[a];
+      const crowd = sim.balls.filter((b) => b.state === 'field' && b.kind === 'nectar' && inRect(b.p, L)).length;
+      if (crowd >= 2) continue;
+      const b = q.shift(); if (this.unlocked[a] > 0) this.unlocked[a]--;
+      const x = a === 'red' ? L.x0 + 0.07 : L.x1 - 0.07, z = lerp(L.z0 + 0.1, L.z1 - 0.1, sim.rng());
+      b.release({ x, y: 0.12, z }, { x: a === 'red' ? 0.4 : -0.4, y: 0, z: 0 });
+    }
+  },
+  assessAuto() {
+    for (const r of sim.robots) {
+      if (!r.active) continue;
+      if (!r.touchingWall() && hyp(r.pos.x - r.start.x, r.pos.z - r.start.z) > 0.03) this.sc[r.alliance].leave += 3;
+      if (r.inZone(ZONES.loading[r.alliance])) this.sc[r.alliance].autoPark += 5;
+    }
+  },
+  /** Ball entering a FLOWER before 1:00 is a MINOR FOUL (5 pts to the opponent) per G410 */
+  checkFlowerFouls() {
+    for (const b of sim.balls) {
+      if (b.state !== 'field') { b.inFlowerIdx = -1; continue; }
+      let idx = -1; for (const f of sim.flowers) if (f.scores(b.p, b.r)) { idx = f.idx; break; }
+      if (idx >= 0 && b.inFlowerIdx < 0 && b.lastLauncher && sim.time - b.launchTime < 4 && !this.flowersUnlocked() && (this.phase === 'auto' || this.phase === 'teleop')) {
+        const opp = b.lastLauncher.alliance === 'red' ? 'blue' : 'red';
+        this.sc[opp].fouls += 5; toast(`MINOR FOUL: ${b.lastLauncher.label} scored a FLOWER before 1:00`, opp);
+      }
+      b.inFlowerIdx = idx;
+    }
+  },
+  totals() {
+    const e = scoring.endState(), out = {};
+    for (const a of ['red', 'blue']) {
+      const s = this.sc[a], t = this.tips[a];
+      out[a] = { leave: s.leave, autoPark: s.autoPark, autoTips: t.auto * 20, teleTips: t.tele * 20, cell: e[a].cell, bottom: e[a].bottom,
+        flower: e[a].flower, garden: e[a].garden, park: e[a].park, fouls: s.fouls };
+      out[a].total = Object.values(out[a]).reduce((x, y) => x + y, 0);
+    }
+    return out;
+  },
+  finish() {
+    this.final = this.totals();
+    const R = this.final.red, B = this.final.blue;
+    const rp = (x, o) => ({ swarm: x.leave + x.autoPark + x.park >= 16 ? 1 : 0, p1: (x.autoTips + x.teleTips) / 20 >= 4 ? 1 : 0, p2: (x.autoTips + x.teleTips) / 20 >= 7 ? 1 : 0, win: x.total > o.total ? 3 : x.total === o.total ? 1 : 0 });
+    const rr = rp(R, B), rb = rp(B, R);
+    const rows = [['LEAVE (auto)', 'leave'], ['PARK (auto)', 'autoPark'], ['HIVE TIPS (auto)', 'autoTips'], ['HIVE TIPS (teleop)', 'teleTips'], ['Balls left in up CELL', 'cell'],
+      ['Bottom NECTAR bonus', 'bottom'], ['Owned FLOWER balls', 'flower'], ['GARDEN', 'garden'], ['PARK (teleop)', 'park'], ['Foul points received', 'fouls']];
+    let html = '<tr><th></th><th class="r">RED</th><th class="b">BLUE</th></tr>';
+    for (const [n, k] of rows) html += `<tr><td>${n}</td><td class="r">${R[k]}</td><td class="b">${B[k]}</td></tr>`;
+    html += `<tr class="total"><td>TOTAL</td><td class="r">${R.total}</td><td class="b">${B.total}</td></tr>`;
+    html += `<tr><td>Ranking points (Swarm / Pollinator 1 / Pollinator 2 / Win)</td><td class="r">${rr.swarm}/${rr.p1}/${rr.p2}/${rr.win} = ${rr.swarm + rr.p1 + rr.p2 + rr.win}</td><td class="b">${rb.swarm}/${rb.p1}/${rb.p2}/${rb.win} = ${rb.swarm + rb.p1 + rb.p2 + rb.win}</td></tr>`;
+    ui.resTable.innerHTML = html;
+    ui.resTitle.textContent = R.total > B.total ? 'RED ALLIANCE WINS' : B.total > R.total ? 'BLUE ALLIANCE WINS' : 'TIE MATCH';
+    ui.resTitle.style.color = R.total > B.total ? 'var(--red)' : B.total > R.total ? 'var(--blue)' : 'var(--text)';
+    if (!HEADLESS) ui.results.style.display = 'flex';
+  },
+};
+
+/* =====================================================================================================
+ * 18. FIELD RESET / STAGING (Section 10.3.1)
+ * ===================================================================================================== */
+const START = {
+  R1: { x: -FH + ROBOT.half + 0.004, z: 0.10, h: Math.PI / 2 },
+  R2: { x: -1.0, z: FH - ROBOT.half - 0.004, h: Math.PI },
+  B1: { x: FH - ROBOT.half - 0.004, z: -0.10, h: -Math.PI / 2 },
+  B2: { x: 1.0, z: -FH + ROBOT.half + 0.004, h: 0 },
+};
+function aiCfg(id) {
+  const mixed = { R2: { drive: '4wd', intake: 'double' }, B1: { drive: 'mecanum', intake: 'single' }, B2: { drive: '4wd', intake: 'double' } }[id];
+  return settings.aiDrive === 'mixed' ? mixed : { drive: settings.aiDrive, intake: mixed.intake };
+}
+function resetField() {
+  // Tear down the old world and visuals
+  if (world) world.free();
+  world = new RAPIER.World({ x: 0, y: -G, z: 0 });
+  world.timestep = DT;
+  world.integrationParameters.numSolverIterations = 8;
+  for (const b of sim.balls) sim.dynGroup.remove(b.mesh);
+  for (const r of sim.robots) sim.dynGroup.remove(r.group);
+  sim.balls = []; sim.robots = []; sim.time = 0; sim.rng = mulberry32(1234);
+  match.queue = { red: [], blue: [] }; match.unlocked = { red: 0, blue: 0 }; match.tips = { red: { auto: 0, tele: 0 }, blue: { auto: 0, tele: 0 } }; match.feedCd = 0;
+
+  buildFieldVisuals();
+  buildFieldColliders();
+  if (!sim.flowers.length) sim.flowers = FLOWERS_DEF.map((d, i) => new Flower(d, i));
+  for (const f of sim.flowers) f.buildColliders();
+  if (!sim.hives.length) sim.hives = [new Hive('red'), new Hive('blue')];
+  for (const h of sim.hives) h.build();
+
+  const add = (kind, color, pos) => { const b = new Ball(kind, color, pos); sim.balls.push(b); return b; };
+  const rP = BALL.pollen.r, rN = BALL.nectar.r;
+  // 4 POLLEN stacked in each FLOWER (bottom one in the lower ring's hole; the rest zig-zag)
+  for (const f of sim.flowers) for (let k = 0; k < 4; k++) {
+    const o = toWorld((k % 2 ? 1 : -1) * 0.012 * (k > 0 ? 1 : 0), 0, f.rot);
+    add('pollen', 'yellow', { x: f.pos.x + o.x, y: rP + 0.001 + k * (2 * rP - 0.008), z: f.pos.z + o.z });
+  }
+  // 4 POLLEN per GARDEN in a line from the corner closest to the alliance area
+  for (const a of ['red', 'blue']) for (let k = 0; k < 4; k++) {
+    const s = a === 'red' ? 1 : -1;
+    add('pollen', 'yellow', { x: s * (-FH + rP + 0.004 + k * (2 * rP + 0.002)), y: rP + 0.001, z: s * (FH - rP - 0.003) });
+  }
+  // 3 NECTAR in each upward-facing CELL, against the back wall and on the side nearest the alliance area
+  for (const h of sim.hives) {
+    const s = h.upSign(), q = h.body.rotation(), t = h.body.translation(), sx = h.alliance === 'red' ? -1 : 1;
+    for (let k = 0; k < 3; k++) {
+      const l = qRot(q, { x: sx * (HIVE.halfW - rN - 0.004 - k * (2 * rN + 0.002)), y: HIVE.floorY + rN + 0.002, z: s * (HIVE.cellInner + HIVE.wall / 2 + rN + 0.003) });
+      add('nectar', h.alliance, { x: t.x + l.x, y: t.y + l.y, z: t.z + l.z });
+    }
+  }
+  // 5 NECTAR per alliance with the human player
+  for (const a of ['red', 'blue']) for (let k = 0; k < 5; k++) match.queue[a].push(add('nectar', a, { x: 0, y: -5 - k, z: 0, queue: true }));
+
+  // Robots: the player is always Red 1. The others follow the setup panel.
+  const defs = [
+    { id: 'R1', label: 'RED 1 · YOU', alliance: 'red', control: 'human', cfg: { drive: settings.drive, intake: settings.intake } },
+    { id: 'R2', label: 'RED 2', alliance: 'red', control: settings.ctl.R2, cfg: settings.ctl.R2 === 'gp2' ? { drive: 'mecanum', intake: 'double' } : aiCfg('R2'), strategy: settings.strat.R2 },
+    { id: 'B1', label: 'BLUE 1', alliance: 'blue', control: settings.ctl.B1, cfg: aiCfg('B1'), strategy: settings.strat.B1 },
+    { id: 'B2', label: 'BLUE 2', alliance: 'blue', control: settings.ctl.B2, cfg: aiCfg('B2'), strategy: settings.strat.B2 },
+  ];
+  for (const d of defs) {
+    const active = d.control !== 'off';
+    if (!active) {
+      // Absent robot: its 4 preload POLLEN go in the center of its LOADING ZONE against the wall
+      const L = ZONES.loading[d.alliance];
+      for (let k = 0; k < 4; k++) add('pollen', 'yellow', { x: d.alliance === 'red' ? L.x0 + rP + 0.003 : L.x1 - rP - 0.003, y: rP + 0.001, z: (L.z0 + L.z1) / 2 + (k - 1.5) * (2 * rP + 0.002) });
+      continue;
+    }
+    const r = new Robot({ ...d, start: START[d.id] });
+    r.active = true; r.build(); sim.robots.push(r);
+    if (d.control === 'ai') r.ai = new AI(r);
+    for (let k = 0; k < 4; k++) { const b = add('pollen', 'yellow', { x: 0, y: -3, z: 0 }); b.hold(r); r.held.push(b); }
+  }
+  sim.player = sim.robots[0];
+  // Let the stacks settle before the match starts
+  for (let i = 0; i < 90; i++) { for (const h of sim.hives) h.applyTorques(); world.step(); for (const h of sim.hives) h.postStep(); }
+  for (const h of sim.hives) h.tips = 0;
+}
+
+/* =====================================================================================================
+ * 19. SIMULATION TICK (fixed 120 Hz)
+ * ===================================================================================================== */
+let frameEdges = new Set(), pad1 = null, pad2 = null;
+function tick() {
+  match.update(DT);
+  for (const r of sim.robots) {
+    if (!r.enabled) { r.cmd = Robot.emptyCmd(); r.cmd.autoAim = r.tog ? r.tog.aim : true; continue; }
+    if (r === sim.player) {
+      if (match.phase === 'auto' && match.mode === 'match') { if (!AutoRec.play(r, match.t)) { r.cmd = Robot.emptyCmd(); } }
+      else humanCommand(r, true, pad1, frameEdges);
+    } else if (r.control === 'gp2') {
+      if (match.phase === 'auto') r.cmd = Robot.emptyCmd(); else humanCommand(r, false, pad2, new Set());
+    } else if (r.ai) r.ai.update();
+  }
+  frameEdges = new Set();   // toggles are consumed by the first tick of the frame
+  for (const r of sim.robots) { r.applyDrive(); r.mechanisms(DT); }
+  for (const h of sim.hives) h.applyTorques();
+  world.step();
+  for (const b of sim.balls) b.physicsTick();
+  for (const h of sim.hives) h.postStep();
+  match.checkFlowerFouls();
+  if (AutoRec.recording && match.phase === 'auto' && (Math.round(match.t / DT) % 2 === 0)) AutoRec.sample(sim.player, match.t);
+  sim.time += DT;
+}
+
+/* =====================================================================================================
+ * 20. CAMERA, HUD, UI
+ * ===================================================================================================== */
+const camGoal = { pos: new THREE.Vector3(-FH - 1.4, 1.7, 0.4), look: new THREE.Vector3(0.3, 0.1, 0) }, camLook = new THREE.Vector3(0.3, 0.1, 0);
+camera.position.copy(camGoal.pos);
+const CAMS = ['driver', 'chase', 'top', 'audience', 'orbit'];
+function updateCamera(dt) {
+  const mode = settings.cam;
+  if (controls) controls.enabled = mode === 'orbit';
+  if (mode === 'orbit') { controls.update(); return; }
+  const r = sim.player;
+  if (mode === 'driver') { camGoal.pos.set(-FH - 1.35, 1.65, 0.35); camGoal.look.set(0.35, 0.05, 0); }
+  else if (mode === 'top') { camGoal.pos.set(0, 5.6, 0.01); camGoal.look.set(0, 0, 0); }
+  else if (mode === 'audience') { camGoal.pos.set(0, 2.3, FH + 2.7); camGoal.look.set(0, 0.25, 0); }
+  else if (mode === 'chase' && r) {
+    const p = r.pos, h = r.heading;
+    camGoal.pos.set(p.x - Math.sin(h) * 1.25, 0.95, p.z - Math.cos(h) * 1.25); camGoal.look.set(p.x + Math.sin(h) * 0.6, 0.3, p.z + Math.cos(h) * 0.6);
+  }
+  const k = 1 - Math.exp(-dt * 6);
+  camera.position.lerp(camGoal.pos, k); camLook.lerp(camGoal.look, k); camera.lookAt(camLook);
+  if (controls) controls.target.copy(camLook);
+}
+// Trajectory preview for the player's next shot
+const previewLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 48 }, () => new THREE.Vector3())), MAT.preview);
+previewLine.frustumCulled = false; scene.add(previewLine);
+function updatePreview() {
+  const r = sim.player; if (!r) return;
+  previewLine.visible = settings.preview === 'on' && r.held.length > 0 && match.phase !== 'post' && (r.shot.ok || !r.autoAim);
+  if (!previewLine.visible) return;
+  let p0, vel, T, ok = r.shot.ok;
+  if (r.shot.ok) { p0 = r.shot.launch; vel = { x: r.shot.vel.x, y: r.shot.vel.y - G * DT / 2, z: r.shot.vel.z }; T = r.flapUp ? 1.2 : (r.shot.T || 1.2) * 1.15; }
+  else if (!r.flapUp) {
+    const yaw = r.heading + r.turretYaw, sp = r.manualSpeed, pt = r.turretPitch, v = r.vel;
+    p0 = r.launchPoint(); vel = { x: Math.sin(yaw) * Math.cos(pt) * sp + v.x, y: Math.sin(pt) * sp, z: Math.cos(yaw) * Math.cos(pt) * sp + v.z }; T = 1.6;
+  } else { previewLine.visible = false; return; }
+  const pos = previewLine.geometry.attributes.position;
+  for (let i = 0; i < 48; i++) { const q = trajAt(p0, vel, T * i / 47); pos.setXYZ(i, q.x, Math.max(0, q.y), q.z); }
+  pos.needsUpdate = true; previewLine.computeLineDistances(); previewLine.material = ok ? MAT.preview : MAT.previewBad;
+}
+function toast(msg, tone) {
+  if (HEADLESS) return;
+  ui.toast.textContent = msg; ui.toast.style.borderColor = tone === 'red' ? 'var(--red)' : tone === 'blue' ? 'var(--blue)' : 'var(--yellow)';
+  ui.toast.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => ui.toast.classList.remove('show'), 2600);
+}
+function banner(msg, secs) {
+  if (HEADLESS) return;
+  ui.banner.textContent = msg; ui.banner.classList.add('show'); clearTimeout(banner.t); banner.t = setTimeout(() => ui.banner.classList.remove('show'), secs * 1000);
+}
+let hudT = 0;
+function updateHUD(dt) {
+  hudT -= dt; if (hudT > 0) return; hudT = 0.1;
+  const tot = match.totals();
+  ui.sRed.textContent = tot.red.total; ui.sBlue.textContent = tot.blue.total;
+  for (const a of ['red', 'blue']) (a === 'red' ? ui.sRedSub : ui.sBlueSub).textContent = `TIPS ${match.tipCount(a)} · HP NECTAR ${match.queue[a].length}`;
+  ui.timer.textContent = match.displayClock();
+  const phaseName = { free: 'FREE PRACTICE', countdown: 'GET READY', auto: match.mode === 'record' ? '● RECORDING AUTO' : 'AUTONOMOUS', transition: 'TRANSITION', teleop: match.flowersUnlocked() ? 'TELEOP · FLOWERS OPEN' : 'TELEOP', post: 'MATCH OVER', pre: 'PRE-MATCH' }[match.phase] || match.phase;
+  ui.phase.textContent = phaseName;
+  const r = sim.player; if (!r) return;
+  ui.slots.innerHTML = Array.from({ length: 10 }, (_, i) => { const b = r.held[i]; return `<i class="${b ? (b.kind === 'pollen' ? 'pollen' : b.color) : ''}"></i>`; }).join('');
+  ui.heldTxt.textContent = `${r.held.length} / 10 held${r.held.length >= 10 ? ' · FULL' : ''}`;
+  ui.intakeTxt.textContent = r.intakeF < 0 ? 'EJECT' : (r.intakeF > 0 ? 'FRONT' : '') + (r.intakeB > 0 ? (r.intakeF > 0 ? '+BACK' : 'BACK') : '') || 'OFF';
+  ui.flapTxt.textContent = r.flapUp ? 'FLOWER' : 'SHOOTER';
+  const lockOk = r.shot.ok && (r.flapUp || r.aligned);
+  ui.lock.textContent = r.flapUp ? r.shot.reason : r.autoAim ? (r.shot.ok ? (r.aligned ? 'LOCKED' : 'ALIGNING') : r.shot.reason) : 'MANUAL';
+  ui.lock.className = lockOk ? 'ok' : r.shot.ok ? 'wait' : 'bad';
+  ui.lockSub.textContent = r.flapUp ? 'Flower placement' : r.autoAim ? `Auto-aim · ${(r.shot.dist || 0).toFixed(2)} m` : `Manual · ${r.manualSpeed.toFixed(1)} m/s`;
+  ui.driveTxt.textContent = r.cfg.drive === 'mecanum' ? 'MECANUM' : '4-WHEEL';
+  // Keep the segmented controls in sync with in-game toggles
+  if (r.tog) { setSeg('flap', r.tog.flap ? 'up' : 'down'); setSeg('aim', r.tog.aim ? 'auto' : 'manual'); }
+  const gps = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  ui.gp.textContent = gps.length ? gps.map((g, i) => `🎮 ${i + 1}: ${g.id.slice(0, 38)}${g.mapping === 'standard' ? '' : ' (non-standard)'}`).join(' · ') : 'No gamepad detected. Press any button on an FTC controller to connect it.';
+}
+function setSeg(key, v) {
+  const seg = document.querySelector(`.seg[data-key="${key}"]`); if (!seg) return;
+  for (const b of seg.children) b.classList.toggle('on', b.dataset.v === v);
+}
+function refreshAutoStatus() {
+  ui.autoStatus.textContent = AutoRec.data ? `${(AutoRec.data.frames.at(-1)[0]).toFixed(1)} s · ${AutoRec.data.drive}` : 'none (AUTO skipped)';
+}
+function initUI() {
+  for (const id of ['sRed', 'sBlue', 'sRedSub', 'sBlueSub', 'timer', 'phase', 'slots', 'heldTxt', 'intakeTxt', 'flapTxt', 'lock', 'lockSub', 'driveTxt', 'toast', 'banner', 'results', 'resTable', 'resTitle', 'autoStatus', 'gp'])
+    ui[id] = document.getElementById(id);
+  const segVal = { drive: settings.drive, intake: settings.intake, flap: settings.flap, aim: settings.aim, frame: settings.frame, preview: settings.preview };
+  for (const seg of document.querySelectorAll('.seg')) {
+    const key = seg.dataset.key; setSeg(key, segVal[key]);
+    seg.addEventListener('click', (e) => {
+      const v = e.target.dataset.v; if (!v) return;
+      settings[key] = v; setSeg(key, v); saveSettings();
+      const r = sim.player;
+      if ((key === 'drive' || key === 'intake') && r) { r.rebuild({ [key]: v }); toast(`Robot reconfigured: ${r.cfg.drive === 'mecanum' ? 'Mecanum' : '4-wheel'} drive · ${r.cfg.intake} intake`); }
+      if (key === 'flap' && r?.tog) r.tog.flap = v === 'up';
+      if (key === 'aim' && r?.tog) r.tog.aim = v === 'auto';
+      e.target.blur();
+    });
+  }
+  const bindSel = (id, get, set) => { const el = document.getElementById(id); el.value = get(); el.addEventListener('change', () => { set(el.value); saveSettings(); el.blur(); }); };
+  for (const k of ['R2', 'B1', 'B2']) {
+    bindSel('ctl' + k, () => settings.ctl[k], (v) => { settings.ctl[k] = v; if (match.phase === 'free') match.startFree(); else toast('Takes effect at the next reset'); });
+    bindSel('str' + k, () => settings.strat[k], (v) => { settings.strat[k] = v; const r = sim.robots.find((x) => x.id === k); if (r) { r.strategy = v; if (r.ai) r.ai.mode = v === 'defense' ? 'defense' : 'offense'; } toast(`${k} strategy: ${v}`); });
+  }
+  bindSel('aiDrive', () => settings.aiDrive, (v) => { settings.aiDrive = v; toast('AI drivetrains change at the next reset'); });
+  bindSel('cam', () => settings.cam, (v) => { settings.cam = v; });
+  bindSel('speed', () => String(settings.speed), (v) => { settings.speed = Number(v); });
+  document.getElementById('bStart').onclick = (e) => { e.target.blur(); match.begin('match'); };
+  document.getElementById('bFree').onclick = (e) => { e.target.blur(); match.startFree(); };
+  document.getElementById('bRec').onclick = (e) => { e.target.blur(); match.begin('record'); };
+  document.getElementById('bReset').onclick = (e) => { e.target.blur(); if (match.phase === 'free') match.startFree(); else { resetField(); match.phase = 'pre'; match.t = 0; match.mode = 'idle'; match.newScore(); } };
+  document.getElementById('bAutoClear').onclick = (e) => { e.target.blur(); AutoRec.clear(); refreshAutoStatus(); toast('AUTO routine cleared'); };
+  document.getElementById('bAutoExport').onclick = (e) => {
+    e.target.blur();
+    const cur = AutoRec.data ? JSON.stringify(AutoRec.data) : '';
+    const txt = prompt('Copy this AUTO routine JSON, or paste one to import it:', cur);
+    if (txt && txt !== cur) { try { const d = JSON.parse(txt); if (!Array.isArray(d.frames)) throw new Error('missing frames'); AutoRec.data = d; AutoRec.save(); toast('AUTO routine imported'); } catch (err) { toast('Import failed: ' + err.message, 'red'); } }
+    refreshAutoStatus();
+  };
+  document.getElementById('bResClose').onclick = () => (ui.results.style.display = 'none');
+  document.getElementById('cfgToggle').onclick = () => { const c = document.getElementById('cfg'); c.style.display = c.style.display === 'none' ? '' : 'none'; };
+  refreshAutoStatus();
+  addEventListener('gamepadconnected', (e) => toast(`Gamepad connected: ${e.gamepad.id.slice(0, 40)}`));
+}
+
+/* =====================================================================================================
+ * 21. MAIN LOOP
+ * ===================================================================================================== */
+let paused = false, acc = 0, last = performance.now();
+function syncVisuals() {
+  for (const h of sim.hives) h.sync();
+  for (const b of sim.balls) b.sync();
+  for (const r of sim.robots) r.sync();
+  for (const a of ['red', 'blue']) trayBalls[a].forEach((m, i) => (m.visible = i < match.queue[a].length));
+  if (sim.player) sim.player.labelSprite.visible = settings.cam !== 'chase';
+}
+function handleGlobalKeys() {
+  if (keyEdges.has('KeyH')) { const h = document.getElementById('help'); h.style.display = h.style.display === 'none' ? '' : 'none'; }
+  if (keyEdges.has('KeyC') || pad1?.edge('rb')) { settings.cam = CAMS[(CAMS.indexOf(settings.cam) + 1) % CAMS.length]; document.getElementById('cam').value = settings.cam; }
+  if (keyEdges.has('KeyP')) { paused = !paused; banner(paused ? 'PAUSED' : 'RESUMED', 0.8); }
+  if (keyEdges.has('Enter') || pad1?.edge('start')) { if (match.phase === 'free' || match.phase === 'post' || match.phase === 'pre') match.begin('match'); else { paused = !paused; banner(paused ? 'PAUSED' : 'RESUMED', 0.8); } }
+  if (keyEdges.has('KeyO')) match.startFree();
+}
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  pad1 = readPad(0); pad2 = readPad(1);
+  for (const k of keyEdges) frameEdges.add(k);
+  handleGlobalKeys(); keyEdges.clear();
+  if (!paused) {
+    acc += dt * settings.speed; let n = 0;
+    while (acc >= DT && n < 12) { tick(); acc -= DT; n++; }
+    if (n >= 12) acc = 0;
+  }
+  syncVisuals(); updateCamera(dt); updatePreview(); updateHUD(dt);
+  if (renderer) renderer.render(scene, camera);
+}
+
+/* =====================================================================================================
+ * 22. BOOT + AUTOMATION API (window.BIOBUZZ) for headless tests and scripting
+ * ===================================================================================================== */
+async function boot() {
+  await RAPIER.init();
+  buildNav();
+  initUI();
+  match.startFree();
+  document.getElementById('loading').remove();
+  if (HEADLESS) for (const id of ['help']) document.getElementById(id).style.display = 'none';
+  requestAnimationFrame(frame);
+  window.BIOBUZZ.ready = true;
+}
+window.BIOBUZZ = {
+  ready: false, sim, match, settings, AutoRec, scoring, solveArc, HIVE, FLOWER, ROBOT, BALL,
+  get world() { return world; },
+  /** Advance the simulation synchronously by `sec` seconds (no rendering) */
+  advance(sec) { const n = Math.round(sec / DT); for (let i = 0; i < n; i++) tick(); syncVisuals(); return match.phase; },
+  render() { syncVisuals(); updateCamera(1); updatePreview(); if (renderer) renderer.render(scene, camera); },
+  pause(v = true) { paused = v; },
+  reset: () => resetField(), startMatch: () => match.begin('match'), startFree: () => match.startFree(), startRecord: () => match.begin('record'),
+  /** Gently place balls in the up CELL of a HIVE (for calibration tests). Returns the number placed. */
+  fillCell(alliance, nP, nN = 0, dropH = 0.01) {
+    const h = sim.hives.find((x) => x.alliance === alliance), s = h.upSign(), q = h.body.rotation(), t = h.body.translation();
+    const pool = (kind) => sim.balls.filter((b) => b.state === 'field' && b.kind === kind && !h.inCell(b.p, s) && (kind === 'pollen' || b.color === alliance));
+    const items = [...pool('nectar').slice(0, nN), ...pool('pollen').slice(0, nP)];
+    let x = -HIVE.halfW + 0.001, row = 0, placed = 0;
+    for (const b of items) {
+      if (x + 2 * b.r > HIVE.halfW) { row++; x = -HIVE.halfW + 0.001; }
+      const l = qRot(q, { x: x + b.r, y: HIVE.floorY + b.r + dropH, z: s * (HIVE.cellInner + HIVE.wall / 2 + b.r + 0.003 + row * 0.075) });
+      b.release({ x: t.x + l.x, y: t.y + l.y, z: t.z + l.z }, { x: 0, y: 0, z: 0 }); x += 2 * b.r + 0.0005; placed++;
+    }
+    return placed;
+  },
+  state() {
+    return {
+      phase: match.phase, t: match.t, totals: match.totals(), tips: match.tips,
+      hives: sim.hives.map((h) => ({ a: h.alliance, theta: h.theta * 180 / Math.PI, tips: h.tips })),
+      robots: sim.robots.map((r) => ({ id: r.id, x: r.pos.x, z: r.pos.z, h: r.heading, held: r.held.length, drive: r.cfg.drive, intake: r.cfg.intake, state: r.ai?.state, shot: r.shot.reason, stats: r.stats })),
+      balls: { field: sim.balls.filter((b) => b.state === 'field').length, held: sim.balls.filter((b) => b.state === 'held').length, queue: sim.balls.filter((b) => b.state === 'queue').length },
+    };
+  },
+};
+boot().catch((e) => { console.error(e); const l = document.getElementById('loading'); if (l) l.textContent = 'Failed to start: ' + e.message; });
+</script>
+</body>
+</html>

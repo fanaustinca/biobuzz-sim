@@ -1,0 +1,7 @@
+{
+  "name": "biobuzz-sim",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node tests/run.mjs" },
+  "devDependencies": { "puppeteer-core": "^24.0.0" }
+}
