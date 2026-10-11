@@ -401,6 +401,43 @@ const MAT = {
   previewBad: new THREE.LineDashedMaterial({ color: 0xff6b6b, dashSize: 0.05, gapSize: 0.03, transparent: true, opacity: 0.7 }),
 };
 const allianceMat = (a) => (a === 'red' ? MAT.red : MAT.blue);
+// Robot parts: CNC-pocketed alliance plates, goBILDA-style hole-pattern channel, perforated deck sheet, LEDs
+const pocketAlpha = (n) => {
+  const t = canvasTexture(512, 192, (g, w, h) => {
+    g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.fillStyle = '#000';
+    const m = 22, cw = (w - 2 * m) / n;
+    for (let i = 0; i < n; i++) {                                 // alternating triangle pockets (a truss)
+      const x0 = m + i * cw + 7, x1 = m + (i + 1) * cw - 7, up = i % 2 === 0;
+      g.beginPath(); g.moveTo(x0, up ? h - m : m); g.lineTo(x1, up ? h - m : m); g.lineTo((x0 + x1) / 2, up ? m : h - m); g.closePath(); g.fill();
+      g.beginPath(); g.arc(up ? x1 : x0, h / 2, 10, 0, Math.PI * 2); g.fill();
+    }
+  });
+  t.colorSpace = THREE.NoColorSpace; return t;
+};
+const holeTex = (w, h, cols, rows, base, hole) => canvasTexture(w, h, (g) => {
+  g.fillStyle = base; g.fillRect(0, 0, w, h); g.fillStyle = hole;
+  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) { g.beginPath(); g.arc((i + 0.5) * w / cols, (j + 0.5) * h / rows, Math.min(w / cols, h / rows) * 0.3, 0, Math.PI * 2); g.fill(); }
+});
+const RMAT = {
+  plate: Object.fromEntries(['red', 'blue'].map((a) => [a, Object.fromEntries([2, 4, 6].map((n) => [n, new THREE.MeshStandardMaterial({ color: a === 'red' ? 0xc8191f : 0x2457d6, metalness: 0.35, roughness: 0.45, alphaMap: pocketAlpha(n), alphaTest: 0.5, side: THREE.DoubleSide })]))])),
+  led: Object.fromEntries(['red', 'blue'].map((a) => [a, new THREE.MeshStandardMaterial({ color: 0x111111, emissive: a === 'red' ? 0xff2a2a : 0x3a7bff, emissiveIntensity: 2.2 })])),
+  channel: new THREE.MeshStandardMaterial({ map: holeTex(1024, 64, 20, 1, '#c3c8cf', '#1a1c20'), metalness: 0.75, roughness: 0.35 }),
+  sheet: new THREE.MeshStandardMaterial({ map: holeTex(512, 512, 14, 14, '#5b616a', '#16181b'), metalness: 0.6, roughness: 0.45 }),
+  gold: new THREE.MeshStandardMaterial({ color: 0xd9a520, metalness: 0.8, roughness: 0.3 }),
+  hub: new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.6 }),
+  orange: new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.5 }),
+  battery: new THREE.MeshStandardMaterial({ map: canvasTexture(256, 128, (g, w, h) => { g.fillStyle = '#121212'; g.fillRect(0, 0, w, h); g.fillStyle = '#2fbf4a'; g.fillRect(0, h * 0.3, w, h * 0.4); g.fillStyle = '#111'; g.font = 'bold 34px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('12V NiMH', w / 2, h / 2); }), roughness: 0.7 }),
+  lens: new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x39ff6a, emissiveIntensity: 1.4 }),
+  tread: new THREE.MeshStandardMaterial({ map: canvasTexture(256, 32, (g, w, h) => { g.fillStyle = '#1a1a1a'; g.fillRect(0, 0, w, h); g.fillStyle = '#0b0b0b'; for (let i = 0; i < 32; i++) g.fillRect(i * 8, 0, 4, h); }), roughness: 0.95 }),
+};
+/** Free a group's geometries, and the materials/textures it owns (shared MAT/RMAT materials are kept) */
+function disposeGroup(g) {
+  g.traverse((o) => {
+    o.geometry?.dispose();
+    const m = o.material; if (m?.userData.own) { m.map?.dispose(); m.dispose(); }
+  });
+  while (g.children.length) g.remove(g.children[0]);
+}
 function mesh(geo, mat, parent, x = 0, y = 0, z = 0, shadow = true) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
   if (shadow) { m.castShadow = true; m.receiveShadow = true; }
@@ -792,7 +829,7 @@ class Ball {
   toQueue() { this.state = 'queue'; this.body.setEnabled(false); this.mesh.visible = false; }
   hold(robot) { this.state = 'held'; this.owner = robot; this.body.setEnabled(false); }
   release(pos, vel) {
-    this.state = 'field'; this.owner = null;
+    this.state = 'field'; this.owner = null; this.mesh.scale.setScalar(1);
     this.body.setEnabled(true);
     this.body.setTranslation(pos, true); this.body.setLinvel(vel, true); this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.mesh.visible = true;
@@ -869,7 +906,9 @@ class Robot {
   rebuild(cfg) {
     const p = this.pos, h = this.heading;
     world.removeRigidBody(this.body);
+    const wasDouble = this.cfg.intake === 'double';
     Object.assign(this.cfg, cfg);
+    if (this.tog && !wasDouble && this.cfg.intake === 'double') this.tog.intakeB = true;
     this.build({ x: p.x, z: p.z, h });
   }
 
@@ -1078,85 +1117,129 @@ class Robot {
 
   /* ---------------- Visuals ---------------- */
   buildVisual() {
-    const g = this.group; while (g.children.length) g.remove(g.children[0]);
-    const R = ROBOT, col = allianceMat(this.alliance), cf = this.coreFront, cb = this.coreBack, mec = this.cfg.drive === 'mecanum';
-    // Side plates (alliance colored), core, deck
+    const g = this.group; disposeGroup(g);
+    const R = ROBOT, a = this.alliance, col = allianceMat(a), plateM = RMAT.plate[a][6], cf = this.coreFront, cb = this.coreBack, mec = this.cfg.drive === 'mecanum';
+    const L = 2 * R.half, cz = (cf + cb) / 2, cl = cf - cb, own = (m) => { m.userData.own = true; return m; };
+    const box = (w, h, d, m, x, y, z, sh = true) => mesh(new THREE.BoxGeometry(w, h, d), m, g, x, y, z, sh);
+    const cyl = (r, l, m, parent, x, y, z, axis = 'x', seg = 16) => {
+      const c = mesh(new THREE.CylinderGeometry(r, r, l, seg), m, parent, x, y, z);
+      if (axis === 'x') c.rotation.z = Math.PI / 2; else if (axis === 'z') c.rotation.x = Math.PI / 2;
+      return c;
+    };
+    // Outer side plates (pocketed, alliance colored) with an LED underglow strip and top edge rail
     for (const sx of [-1, 1]) {
-      mesh(new THREE.BoxGeometry(0.006, 0.13, 2 * R.half), col, g, sx * (R.half - 0.003), 0.135, 0);
-      mesh(new THREE.BoxGeometry(R.rail - 0.008, 0.03, 2 * R.half), MAT.alu, g, sx * (R.half - R.rail / 2), 0.075, 0);
+      box(0.006, 0.17, L, plateM, sx * (R.half - 0.003), 0.105, 0);
+      box(0.004, 0.008, L - 0.04, RMAT.led[a], sx * (R.half + 0.001), 0.022, 0, false);
+      box(0.014, 0.014, L, RMAT.channel, sx * (R.half - 0.013), 0.197, 0);
     }
-    mesh(new THREE.BoxGeometry(2 * (R.half - R.rail), R.chassisTop - 0.04, cf - cb), MAT.darkAlu, g, 0, (R.chassisTop + 0.04) / 2, (cf + cb) / 2);
-    mesh(new THREE.BoxGeometry(2 * R.half - 0.01, R.deckTop - R.chassisTop, cf - cb), MAT.black, g, 0, (R.chassisTop + R.deckTop) / 2, (cf + cb) / 2);
-    mesh(new THREE.BoxGeometry(2 * R.half - 0.03, 0.004, cf - cb - 0.02), MAT.alu, g, 0, R.deckTop + 0.002, (cf + cb) / 2);
+    // Drive channels inboard of the wheels (core section only, so the intake mouths stay open), cross channels and a belly pan
+    for (const sx of [-1, 1]) box(0.024, 0.048, cl, RMAT.channel, sx * 0.15, 0.05, cz);
+    box(2 * (R.half - R.rail), 0.048, 0.024, RMAT.channel, 0, 0.05, cf - 0.012);
+    box(2 * (R.half - R.rail), 0.048, 0.024, RMAT.channel, 0, 0.05, cb + 0.012);
+    box(2 * (R.half - R.rail), 0.004, cl, MAT.darkAlu, 0, 0.016, cz);
+    // Drive motors (goBILDA-style: black can, gold gearbox) beside each wheel
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const z = clamp(sz * (R.half - 0.075), cb + 0.045, cf - 0.045);
+      cyl(0.019, 0.06, MAT.black, g, sx * 0.08, 0.05, z);
+      cyl(0.021, 0.022, RMAT.gold, g, sx * 0.121, 0.05, z);
+    }
     // Wheels
     this.wheels = [];
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
       const wg = new THREE.Group(); wg.position.set(sx * (R.half - 0.045), 0.048, sz * (R.half - 0.075)); g.add(wg);
       const spin = new THREE.Group(); wg.add(spin); this.wheels.push(spin);
       if (mec) {
-        const hub = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 16), MAT.alu, spin); hub.rotation.z = Math.PI / 2;
-        // 10 rollers at ±45° (X pattern from above)
+        cyl(0.022, 0.044, MAT.darkAlu, spin, 0, 0, 0);
+        for (const ox of [-0.019, 0.019]) cyl(0.037, 0.004, MAT.alu, spin, ox, 0, 0, 'x', 20);
+        // 10 rollers at ±45° (an X pattern from above)
         const chir = sx * sz;
         for (let k = 0; k < 10; k++) {
-          const a = k / 10 * Math.PI * 2;
-          const rl = mesh(new THREE.CapsuleGeometry(0.009, 0.026, 3, 8), MAT.rubber, spin, 0, Math.cos(a) * 0.038, Math.sin(a) * 0.038);
-          rl.rotation.x = a; rl.rotateZ(Math.PI / 2); rl.rotateY(chir * Math.PI / 4);
+          const t = k / 10 * Math.PI * 2;
+          const rl = mesh(new THREE.CapsuleGeometry(0.0095, 0.026, 3, 8), MAT.rubber, spin, 0, Math.cos(t) * 0.038, Math.sin(t) * 0.038);
+          rl.rotation.x = t; rl.rotateZ(Math.PI / 2); rl.rotateY(chir * Math.PI / 4);
         }
       } else {
-        const tire = mesh(new THREE.CylinderGeometry(0.048, 0.048, 0.035, 22), MAT.rubber, spin); tire.rotation.z = Math.PI / 2;
-        const rim = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.037, 12), MAT.alu, spin); rim.rotation.z = Math.PI / 2;
-        for (let k = 0; k < 5; k++) { const sp = mesh(new THREE.BoxGeometry(0.039, 0.008, 0.05), MAT.darkAlu, spin); sp.rotation.x = k * Math.PI / 5; }
+        cyl(0.048, 0.035, RMAT.tread, spin, 0, 0, 0, 'x', 24);
+        cyl(0.031, 0.037, MAT.alu, spin, 0, 0, 0, 'x', 14);
+        for (let k = 0; k < 5; k++) { const sp = mesh(new THREE.BoxGeometry(0.039, 0.007, 0.05), MAT.darkAlu, spin); sp.rotation.x = k * Math.PI / 5; }
+        cyl(0.01, 0.04, RMAT.gold, spin, 0, 0, 0, 'x', 8);
       }
     }
-    // Intake rollers with compliant flaps
+    // Intake rollers with compliant flaps, side guides and an alliance cross bar
     const roller = (zSign) => {
       const r = new THREE.Group(); r.position.set(0, 0.105, zSign * (R.half - 0.03)); g.add(r);
-      const ax = mesh(new THREE.CylinderGeometry(0.008, 0.008, 2 * R.mouthHalfW + 0.02, 8), MAT.alu, r); ax.rotation.z = Math.PI / 2;
-      for (let i = -2; i <= 2; i++) for (let k = 0; k < 4; k++) {
-        const f = mesh(new THREE.BoxGeometry(0.035, 0.004, 0.045), MAT.rubber, r, i * 0.065, 0, 0);
-        f.rotation.x = k * Math.PI / 2; f.translateZ(0.024);
+      cyl(0.008, 2 * R.mouthHalfW + 0.02, MAT.alu, r, 0, 0, 0, 'x', 8);
+      for (let i = -2; i <= 2; i++) {
+        cyl(0.013, 0.012, RMAT.gold, r, i * 0.065, 0, 0, 'x', 10);
+        for (let k = 0; k < 4; k++) { const f = mesh(new THREE.BoxGeometry(0.035, 0.004, 0.045), MAT.rubber, r, i * 0.065, 0, 0); f.rotation.x = k * Math.PI / 2; f.translateZ(0.024); }
       }
       const r2 = r.clone(); r2.position.set(0, 0.05, zSign * (R.half - 0.08)); g.add(r2);
-      // Intake side guides
-      for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.004, 0.09, R.mouthDepth), MAT.poly, g, sx * R.mouthHalfW, 0.07, zSign * (R.half - R.mouthDepth / 2), false);
+      for (const sx of [-1, 1]) {
+        mesh(new THREE.BoxGeometry(0.004, 0.09, R.mouthDepth), MAT.poly, g, sx * R.mouthHalfW, 0.07, zSign * (R.half - R.mouthDepth / 2), false);
+        cyl(0.012, 0.03, MAT.black, g, sx * (R.mouthHalfW + 0.03), 0.105, zSign * (R.half - 0.03));   // roller motor
+      }
+      box(2 * R.mouthHalfW + 0.06, 0.012, 0.012, col, 0, 0.165, zSign * (R.half - 0.012));
       return [r, r2];
     };
     this.rollersF = roller(1);
     this.rollersB = this.cfg.intake === 'double' ? roller(-1) : null;
-    // Hopper (shows held balls)
-    const hz = (cf + cb) / 2;
-    mesh(new THREE.BoxGeometry(2 * R.half - 0.06, 0.1, cf - cb - 0.03), MAT.poly, g, 0, R.deckTop + 0.05, hz, false);
+    // Electronics bay between pocketed towers: Control Hub, Expansion Hub, battery, power switch, standoffs, clear end panels
+    for (const sx of [-1, 1]) box(0.006, R.deckTop - R.chassisTop + 0.01, cl, RMAT.plate[a][cl > 0.3 ? 4 : 2], sx * (R.half - 0.03), (R.chassisTop + R.deckTop) / 2, cz);
+    box(2 * R.half - 0.03, 0.006, cl, MAT.darkAlu, 0, R.chassisTop + 0.003, cz);
+    for (const sx of [-1, 1]) for (const z of [cb + 0.012, cf - 0.012]) cyl(0.005, R.deckTop - R.chassisTop, MAT.alu, g, sx * (R.half - 0.045), (R.chassisTop + R.deckTop) / 2, z, 'y', 6);
+    const hub = (z, label) => {
+      box(0.103, 0.028, 0.143, RMAT.hub, 0, R.chassisTop + 0.02, z);
+      box(0.103, 0.004, 0.02, RMAT.orange, 0, R.chassisTop + 0.036, z + (label ? 0.05 : -0.05));
+    };
+    const bayFront = cf - 0.085, bayBack = cb + 0.085;
+    hub(bayFront, true);
+    if (cl > 0.3) hub(cz, false);
+    mesh(new THREE.BoxGeometry(0.13, 0.045, 0.065), RMAT.battery, g, 0, R.chassisTop + 0.075, bayBack);
+    box(0.02, 0.012, 0.03, MAT.red, R.half - 0.055, R.chassisTop + 0.012, bayBack);
+    for (const z of [cf, cb]) mesh(new THREE.BoxGeometry(2 * R.half - 0.07, R.deckTop - R.chassisTop, 0.004), MAT.poly, g, 0, (R.chassisTop + R.deckTop) / 2, z, false);
+    // Deck: perforated sheet; hopper of clear polycarbonate with aluminum lips (shows the held balls)
+    box(2 * R.half - 0.03, 0.005, cl, RMAT.sheet, 0, R.deckTop + 0.0025, cz);
+    mesh(new THREE.BoxGeometry(2 * R.half - 0.06, 0.1, cl - 0.03), MAT.poly, g, 0, R.deckTop + 0.05, cz, false);
+    for (const sx of [-1, 1]) box(0.008, 0.008, cl - 0.03, MAT.alu, sx * (R.half - 0.03), R.deckTop + 0.1, cz);
+    for (const z of [cf - 0.015, cb + 0.015]) box(2 * R.half - 0.06, 0.008, 0.008, MAT.alu, 0, R.deckTop + 0.1, z);
     this.slots = [];
-    for (let i = 0; i < 10; i++) this.slots.push(new THREE.Vector3(-0.152 + (i % 5) * 0.076, R.deckTop + 0.05, hz + (i < 5 ? 0.045 : -0.045) * Math.min(1, (cf - cb) / 0.3)));
-    // Turret: yaw ring, then a pitching shooter housing with a flywheel and hood
+    for (let i = 0; i < 10; i++) this.slots.push(new THREE.Vector3(-0.152 + (i % 5) * 0.076, R.deckTop + 0.05, cz + (i < 5 ? 0.045 : -0.045) * Math.min(1, cl / 0.3)));
+    // Turret: bearing ring, then a pitching shooter: pocketed side plates, flywheel, curved hood, motor and a vision camera
     this.turret = new THREE.Group(); this.turret.position.set(0, R.deckTop + 0.1, this.turretZ); g.add(this.turret);
-    mesh(new THREE.CylinderGeometry(0.075, 0.08, 0.025, 24), MAT.alu, this.turret);
+    mesh(new THREE.CylinderGeometry(0.075, 0.08, 0.025, 28), MAT.alu, this.turret);
+    mesh(new THREE.CylinderGeometry(0.082, 0.082, 0.008, 28), MAT.black, this.turret, 0, -0.012, 0);
     mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.1, 10), MAT.darkAlu, this.turret, 0, -0.05, 0);
     this.hood = new THREE.Group(); this.hood.position.y = ROBOT.turretY - (R.deckTop + 0.1); this.turret.add(this.hood);
-    for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.006, 0.09, 0.15), col, this.hood, sx * 0.055, 0, -0.02);
-    this.fly = mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.1, 18), MAT.black, this.hood, 0, -0.03, -0.03); this.fly.rotation.z = Math.PI / 2;
-    const hoodArc = mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.104, 18, 1, true, 0, Math.PI * 0.6), MAT.alu, this.hood, 0, -0.03, -0.03);
-    hoodArc.rotation.z = Math.PI / 2;
+    for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.006, 0.11, 0.17), RMAT.plate[a][2], this.hood, sx * 0.058, 0, -0.02);
+    this.fly = new THREE.Group(); this.fly.position.set(0, -0.03, -0.03); this.hood.add(this.fly);
+    cyl(0.045, 0.06, MAT.rubber, this.fly, 0, 0, 0, 'x', 22);
+    for (const ox of [-0.034, 0.034]) cyl(0.04, 0.008, MAT.alu, this.fly, ox, 0, 0, 'x', 22);
+    for (let k = 0; k < 3; k++) { const s = mesh(new THREE.BoxGeometry(0.07, 0.006, 0.075), MAT.darkAlu, this.fly); s.rotation.x = k * Math.PI / 3; }
+    const hoodArc = mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.11, 22, 1, true, 0, Math.PI * 0.6), MAT.alu, this.hood, 0, -0.03, -0.03);
+    hoodArc.rotation.z = Math.PI / 2; hoodArc.material = own(MAT.alu.clone()); hoodArc.material.side = THREE.DoubleSide;
     mesh(new THREE.BoxGeometry(0.1, 0.012, 0.06), MAT.alu, this.hood, 0, 0.04, 0.06);
+    cyl(0.019, 0.055, MAT.black, this.hood, 0.095, -0.03, -0.03);
+    cyl(0.021, 0.02, RMAT.gold, this.hood, 0.073, -0.03, -0.03);
+    mesh(new THREE.BoxGeometry(0.045, 0.028, 0.022), RMAT.hub, this.hood, 0, 0.065, 0.02);
+    cyl(0.008, 0.004, RMAT.lens, this.hood, 0, 0.065, 0.032, 'z', 14);
     // Cover flap: hinged at the front of the deck. Stowed hanging over the core face; flips up and forward over the intake.
     this.flap = new THREE.Group(); this.flap.position.set(0, R.deckTop, cf); g.add(this.flap);
-    mesh(new THREE.BoxGeometry(2 * R.mouthHalfW, 0.006, 0.2), new THREE.MeshStandardMaterial({ color: this.alliance === 'red' ? 0xff9a9a : 0x9ac2ff, roughness: 0.4, transparent: true, opacity: 0.85 }), this.flap, 0, 0, 0.1);
+    mesh(new THREE.BoxGeometry(2 * R.mouthHalfW, 0.006, 0.2), own(new THREE.MeshStandardMaterial({ color: a === 'red' ? 0xff9a9a : 0x9ac2ff, roughness: 0.4, transparent: true, opacity: 0.85 })), this.flap, 0, 0, 0.1);
     for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(0.006, 0.04, 0.2), MAT.alu, this.flap, sx * R.mouthHalfW, 0.02, 0.1);
-    const hinge = mesh(new THREE.CylinderGeometry(0.008, 0.008, 2 * R.mouthHalfW, 8), MAT.alu, this.flap); hinge.rotation.z = Math.PI / 2;
-    // Side name plates: team number on the right side, the builder credit on the left side
-    if (this.plates) {
-      const [right, left] = this.plates;
-      const plate = (text, big) => new THREE.MeshStandardMaterial({ roughness: 0.5, map: canvasTexture(1024, 256, (c, w, h) => {
-        c.fillStyle = '#f4f4f0'; c.fillRect(0, 0, w, h); c.strokeStyle = this.alliance === 'red' ? '#c4161c' : '#1f52c4'; c.lineWidth = 18; c.strokeRect(9, 9, w - 18, h - 18);
-        c.fillStyle = '#111'; c.textAlign = 'center'; c.textBaseline = 'middle';
-        c.font = big ? '900 200px system-ui, sans-serif' : '800 92px system-ui, sans-serif'; c.fillText(text, w / 2, h / 2 + 6, w - 60);
-      }) });
-      const pw = 2 * R.half - 0.05, ph = pw / 4;
-      const pr = mesh(new THREE.PlaneGeometry(pw, ph), plate(right, true), g, -(R.half + 0.002), 0.135, 0, false); pr.rotation.y = -Math.PI / 2;
-      const pl = mesh(new THREE.PlaneGeometry(pw, ph), plate(left, false), g, R.half + 0.002, 0.135, 0, false); pl.rotation.y = Math.PI / 2;
-    }
+    cyl(0.008, 2 * R.mouthHalfW, MAT.alu, this.flap, 0, 0, 0, 'x', 8);
+    // Side name plates: team number on the right side and the builder credit on the left (AI robots carry their station name)
+    const [right, left] = this.plates || [this.label, this.label];
+    const plate = (text, big) => own(new THREE.MeshStandardMaterial({ roughness: 0.5, map: canvasTexture(1024, 256, (c, w, h) => {
+      c.fillStyle = '#f4f4f0'; c.fillRect(0, 0, w, h); c.strokeStyle = a === 'red' ? '#c4161c' : '#1f52c4'; c.lineWidth = 18; c.strokeRect(9, 9, w - 18, h - 18);
+      c.fillStyle = '#111'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.font = big ? '900 200px system-ui, sans-serif' : '800 92px system-ui, sans-serif'; c.fillText(text, w / 2, h / 2 + 6, w - 60);
+    }) }));
+    const pw = L - 0.05, ph = pw / 4, bigR = /^\d+$/.test(right), bigL = /^\d+$/.test(left);
+    const pr = mesh(new THREE.PlaneGeometry(pw, ph), plate(right, bigR || !this.plates), g, -(R.half + 0.002), 0.115, 0, false); pr.rotation.y = -Math.PI / 2;
+    const pl = mesh(new THREE.PlaneGeometry(pw, ph), plate(left, bigL || !this.plates), g, R.half + 0.002, 0.115, 0, false); pl.rotation.y = Math.PI / 2;
     // Label
-    this.labelSprite = labelSprite(this.label, this.alliance === 'red' ? '#ff6b6b' : '#6ba6ff'); this.labelSprite.position.set(0, 0.78, 0); g.add(this.labelSprite);
+    this.labelSprite = labelSprite(this.label, a === 'red' ? '#ff6b6b' : '#6ba6ff'); this.labelSprite.position.set(0, 0.78, 0); g.add(this.labelSprite);
+    this.labelSprite.material.userData.own = true;
   }
   sync() {
     const p = this.pos, h = this.heading;
@@ -1173,7 +1256,6 @@ class Robot {
       const v = this.slots[i].clone(); this.group.localToWorld(v);
       b.mesh.position.copy(v); b.mesh.visible = true; b.mesh.scale.setScalar(b.kind === 'nectar' ? 0.78 : 1);
     });
-    for (const b of sim.balls) if (b.state === 'field') b.mesh.scale.setScalar(1);
   }
 }
 
@@ -1445,7 +1527,7 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
-const padPrev = [{}, {}];
+const padPrev = [{}, {}], padEdges = [new Set(), new Set()];
 function readPad(idx) {
   const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
   const gp = pads[idx]; if (!gp) return null;
@@ -1456,7 +1538,10 @@ function readPad(idx) {
     a: btn(0), b: btn(1), x: btn(2), y: btn(3), lb: btn(4), rb: btn(5), lt: btn(6), rt: btn(7), back: btn(8), start: btn(9),
     up: btn(12), down: btn(13), left: btn(14), right: btn(15),
   };
-  const prev = padPrev[idx]; s.edge = (k) => s[k] && !prev[k];
+  // Button presses are queued and consumed once, however many physics ticks this frame runs
+  const prev = padPrev[idx];
+  for (const k in s) if (s[k] === true && !prev[k]) padEdges[idx].add(k);
+  s.edge = (k) => padEdges[idx].delete(k);
   padPrev[idx] = { ...s }; return s;
 }
 /** Driver toggles live on the robot so they persist across frames */
@@ -1596,7 +1681,7 @@ const match = {
     if (this.phase === 'auto') return fmtTime(AUTO_LEN - this.t);
     if (this.phase === 'transition') return fmtTime(TRANSITION_LEN - this.t);
     if (this.phase === 'teleop') return fmtTime(TELEOP_LEN - this.t);
-    if (this.phase === 'countdown') return fmtTime(AUTO_LEN);
+    if (this.phase === 'countdown' || this.phase === 'pre') return fmtTime(AUTO_LEN);
     if (this.phase === 'free') return '∞';
     return '0:00';
   },
@@ -1615,6 +1700,7 @@ const match = {
     ui.results.style.display = 'none';
     if (mode === 'record') { toast('Recording AUTO: drive your routine for 30 s', 'yellow'); }
     else if (!AutoRec.data) toast('No AUTO routine recorded. Your robot will skip AUTO.', 'yellow');
+    else if (AutoRec.data.drive && AutoRec.data.drive !== sim.player.cfg.drive) toast(`AUTO was recorded with ${AutoRec.data.drive === 'mecanum' ? 'Mecanum' : '4-wheel'} drive. It may drift on this drivetrain.`, 'yellow');
   },
   startFree() { resetField(); this.mode = 'free'; this.phase = 'free'; this.t = 0; this.newScore(); ui.results.style.display = 'none'; banner('FREE PRACTICE', 1.2); },
   setPhase(p) {
@@ -1727,7 +1813,7 @@ function resetField() {
   world.timestep = DT;
   world.integrationParameters.numSolverIterations = 8;
   for (const b of sim.balls) sim.dynGroup.remove(b.mesh);
-  for (const r of sim.robots) sim.dynGroup.remove(r.group);
+  for (const r of sim.robots) { disposeGroup(r.group); sim.dynGroup.remove(r.group); }
   sim.balls = []; sim.robots = []; sim.time = 0; sim.rng = mulberry32(1234);
   match.queue = { red: [], blue: [] }; match.unlocked = { red: 0, blue: 0 }; match.tips = { red: { auto: 0, tele: 0 }, blue: { auto: 0, tele: 0 } }; match.feedCd = 0;
 
@@ -1802,7 +1888,7 @@ function tick() {
       if (match.phase === 'auto') r.cmd = Robot.emptyCmd(); else humanCommand(r, false, pad2, new Set());
     } else if (r.ai) r.ai.update();
   }
-  frameEdges = new Set();   // toggles are consumed by the first tick of the frame
+  frameEdges = new Set(); padEdges[0].clear(); padEdges[1].clear();   // toggles are consumed by the first tick of the frame
   for (const r of sim.robots) { r.applyDrive(); r.mechanisms(DT); }
   for (const h of sim.hives) h.applyTorques();
   world.step();
@@ -1958,7 +2044,8 @@ function frame(now) {
   pad1 = readPad(0); pad2 = readPad(1);
   for (const k of keyEdges) frameEdges.add(k);
   handleGlobalKeys(); keyEdges.clear();
-  if (!paused) {
+  if (paused) { frameEdges.clear(); padEdges[0].clear(); padEdges[1].clear(); }
+  else {
     acc += dt * settings.speed; let n = 0;
     while (acc >= DT && n < 12) { tick(); acc -= DT; n++; }
     if (n >= 12) acc = 0;
